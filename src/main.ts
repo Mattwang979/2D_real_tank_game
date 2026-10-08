@@ -8,21 +8,23 @@ import './styles.css';
 import { audio } from './core/audio';
 import { get } from './core/save';
 import { Battle } from './game/battle';
-import { MAPS } from './game/map';
+import { MAPS, type MapDef } from './game/map';
+import type { ClientGame, ClientRoom, HostRoom, NetSession } from './net/session';
 import { BattleRenderer } from './render/battleRender';
-import { confirmBox, h, modal, settingsMenu } from './ui/common';
+import { confirmBox, h, modal, settingsMenu, toast } from './ui/common';
 import { Hangar } from './ui/hangar';
 import { Hud } from './ui/hud';
 import { setLang, t } from './ui/i18n';
+import { Lobby } from './ui/lobby';
 import { showResults } from './ui/results';
 import { TechTree } from './ui/techtree';
 import { Title } from './ui/title';
 
-type ScreenId = 'title' | 'hangar' | 'tree' | 'battle' | 'results';
+type ScreenId = 'title' | 'hangar' | 'tree' | 'battle' | 'results' | 'lobby';
 
 const app = document.getElementById('app')!;
 const screens = {} as Record<ScreenId, HTMLElement>;
-for (const id of ['title', 'hangar', 'tree', 'battle', 'results'] as ScreenId[]) {
+for (const id of ['title', 'hangar', 'tree', 'battle', 'results', 'lobby'] as ScreenId[]) {
   const el = h('div', { class: 'screen', id });
   screens[id] = el;
   app.append(el);
@@ -38,6 +40,7 @@ let current: ScreenId = 'title';
 const title = new Title(screens.title);
 const hangar = new Hangar(screens.hangar);
 const tree = new TechTree(screens.tree);
+const lobby = new Lobby(screens.lobby);
 
 function applyI18n() {
   document.querySelectorAll<HTMLElement>('[data-i18n]').forEach((el) => {
@@ -72,10 +75,18 @@ function goFullscreen() {
   }
 }
 
+// invite links: ?room=CODE opens the lobby and joins that room
+const inviteCode = new URLSearchParams(location.search).get('room');
+
 title.onStart = () => {
   audio.unlock();
   goFullscreen();
-  show('hangar');
+  if (inviteCode) {
+    const q = new URLSearchParams(location.search);
+    q.delete('room');
+    history.replaceState(null, '', `${location.pathname}${q.toString() ? `?${q}` : ''}`);
+    openLobby(inviteCode);
+  } else show('hangar');
 };
 hangar.onSettings = () =>
   settingsMenu(() => {
@@ -85,6 +96,15 @@ hangar.onSettings = () =>
   });
 hangar.onTree = () => show('tree');
 hangar.onBattle = () => void startBattle();
+hangar.onMultiplayer = () => openLobby();
+lobby.onBack = () => show('hangar');
+lobby.onHostStart = (room) => void startHostBattle(room);
+lobby.onClientStart = (room, game) => void startClientBattle(room, game);
+
+function openLobby(code?: string) {
+  show('lobby');
+  lobby.show(code);
+}
 tree.onBack = () => show('hangar');
 tree.onView = () => show('hangar');
 
@@ -92,32 +112,70 @@ tree.onView = () => show('hangar');
 let battle: Battle | null = null;
 let renderer: BattleRenderer | null = null;
 let hud: Hud | null = null;
+let net: NetSession | null = null;
 let paused = false;
 let endedAt = -1;
 let rafId = 0;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function showLoading(def: MapDef) {
+  loading.innerHTML = '';
+  loading.append(h('div', { style: 'color:var(--dim);font-size:14px' }, t('Loading')), h('div', { class: 'mapname' }, t(def.name).toUpperCase()), h('div', { class: 'bar' }, h('i')));
+  loading.style.display = 'flex';
+  await sleep(60);
+}
 
 async function startBattle() {
   const s = get();
   audio.unlock();
   const mapDef = s.settings.map === 'random' ? MAPS[Math.floor(Math.random() * MAPS.length)] : MAPS.find((m) => m.id === s.settings.map) ?? MAPS[0];
-  loading.innerHTML = '';
-  loading.append(h('div', { style: 'color:var(--dim);font-size:14px' }, t('Loading')), h('div', { class: 'mapname' }, t(mapDef.name).toUpperCase()), h('div', { class: 'bar' }, h('i')));
-  loading.style.display = 'flex';
-  await new Promise((r) => setTimeout(r, 60));
+  await showLoading(mapDef);
   const b = new Battle({ mapId: mapDef.id, lineup: s.lineup, playerName: s.playerName, seed: 1234 });
+  await runBattle(b, null);
+}
+
+async function startHostBattle(room: HostRoom) {
+  audio.unlock();
+  lobby.inBattle = true;
+  const mapDef = MAPS.find((m) => m.id === room.mapId);
+  await showLoading(mapDef ?? { id: 'random', name: 'Random', theme: 'grass', size: 440 });
+  const b = room.start();
+  await runBattle(b, room.game);
+}
+
+async function startClientBattle(room: ClientRoom, game: ClientGame) {
+  audio.unlock();
+  lobby.inBattle = true;
+  if (current === 'battle') return; // already in a battle (should not happen)
+  await showLoading(game.b.map.def);
+  const ok = await Promise.race([game.ready.then(() => true), sleep(10000).then(() => false)]);
+  if (!ok || room.phase === 'closed') {
+    loading.style.display = 'none';
+    toast(t('Could not sync with the host'));
+    lobby.leaveRoom();
+    openLobby();
+    return;
+  }
+  await runBattle(game.b, game);
+}
+
+async function runBattle(b: Battle, session: NetSession | null) {
+  const s = get();
   show('battle');
   screens.battle.innerHTML = '';
   const canvas = h('canvas');
   screens.battle.append(canvas);
   await new Promise((r) => requestAnimationFrame(r));
   const r = new BattleRenderer(canvas, b, s.settings.quality);
-  const hd = new Hud(b, r, canvas);
+  const hd = new Hud(b, r, canvas, session?.controls);
   hd.onPause = () => openPause();
   if (s.stats.battles < 3) hd.tutorial = 14;
   hd.onLeave = () => leaveBattle();
   battle = b;
   renderer = r;
   hud = hd;
+  net = session;
   paused = false;
   endedAt = -1;
   audio.engineStart();
@@ -138,14 +196,19 @@ async function startBattle() {
         hd.handle({ type: 'notice', text: 'Graphics: Low (auto)', color: '#9fd3ff' });
       }
     }
-    if (!paused) {
+    // multiplayer never pauses the simulation
+    const simPaused = paused && !session;
+    if (!simPaused) {
       hd.update(dt);
+      session?.beforeUpdate(dt);
       const steps = dt > 1 / 45 ? 2 : 1;
       for (let i = 0; i < steps; i++) b.update(dt / steps);
+      session?.afterUpdate(dt, b.events);
       for (const ev of b.events) hd.handle(ev);
       b.events.length = 0;
     }
-    r.render(paused ? 0 : dt);
+    hd.netInfo = session ? session.info() : null;
+    r.render(simPaused ? 0 : dt);
     hd.draw(r.ctx);
     if (b.state === 'ended') {
       if (endedAt < 0) endedAt = now;
@@ -161,13 +224,15 @@ async function startBattle() {
 
 function openPause() {
   if (!battle) return;
+  const mp = !!net;
   paused = true;
-  audio.pause();
+  if (!mp) audio.pause();
   let close = () => {};
   const c = h(
     'div',
     {},
-    h('h2', {}, t('Paused')),
+    h('h2', {}, mp ? t('Menu') : t('Paused')),
+    mp ? h('div', { style: 'color:var(--dim);font-size:13px' }, t('Multiplayer battles keep running.')) : null,
     h(
       'div',
       { class: 'row' },
@@ -181,18 +246,22 @@ function openPause() {
           close();
         },
       }, `${t('Sound')}: ${get().settings.volume > 0 ? t('On') : t('Off')}`),
-      h('button', { class: 'btn danger', onclick: () => (close(), confirmBox(t('Leave battle'), () => leaveBattle())) }, t('Leave battle')),
+      h('button', { class: 'btn danger', onclick: () => (close(), confirmBox(net?.isHost ? t('Leaving ends the battle for everyone') : t('Leave battle'), () => leaveBattle())) }, t('Leave battle')),
     ),
   );
   close = modal(c, () => {
     paused = false;
-    audio.resume();
+    if (!mp) audio.resume();
   });
 }
 
 function leaveBattle() {
   if (!battle) return;
   paused = false;
+  if (net) {
+    net.leave();
+    lobby.leaveRoom();
+  }
   if (battle.state !== 'ended') battle.end('defeat');
   finishBattle();
 }
@@ -206,8 +275,15 @@ function finishBattle() {
   battle = null;
   renderer = null;
   hud = null;
+  net = null;
   show('results');
-  showResults(screens.results, b, () => show('hangar'));
+  showResults(screens.results, b, () => {
+    if (lobby.active) {
+      lobby.host?.backToLobby();
+      lobby.client?.backToLobby();
+      openLobby();
+    } else show('hangar');
+  });
 }
 
 window.addEventListener('resize', () => {
@@ -216,7 +292,7 @@ window.addEventListener('resize', () => {
   if (current === 'hangar') hangar.resize();
 });
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden && battle && !paused && battle.state === 'playing') openPause();
+  if (document.hidden && battle && !net && !paused && battle.state === 'playing') openPause();
 });
 
 show('title');
@@ -233,7 +309,12 @@ applyI18n();
   get hud() {
     return hud;
   },
+  get net() {
+    return net;
+  },
+  lobby,
   show,
   startBattle,
+  openLobby,
   save: get,
 };

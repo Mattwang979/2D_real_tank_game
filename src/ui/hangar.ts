@@ -22,6 +22,7 @@ export class Hangar {
   private last = 0;
   private idleT = 0;
   onBattle: () => void = () => {};
+  onMultiplayer: () => void = () => {};
   onTree: () => void = () => {};
   onSettings: () => void = () => {};
 
@@ -68,6 +69,7 @@ export class Hangar {
       'div',
       { class: 'actions' },
       h('button', { class: 'btn primary', onclick: () => this.onBattle() }, t('BATTLE')),
+      h('button', { class: 'btn mp-btn', onclick: () => this.onMultiplayer() }, `👥 ${t('MULTIPLAYER')}`),
       h('div', { class: 'label' }, t('Map')),
       this.mapsEl,
       h('div', { style: 'flex:1' }),

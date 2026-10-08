@@ -1104,6 +1104,20 @@ export class Battle {
         t.update(dt, this.time);
         if (!prevReloaded && t.isReloaded()) audio.reloadDone();
         this.collideTank(t, contacts);
+        // keep our predicted tank out of the others (the host resolves the real collision)
+        const pa = t.bp.hullPoly.map((q) => toWorld(q, t.pos, t.ang));
+        for (const o of this.tanks) {
+          if (o === t || dist(o.pos, t.pos) > o.bp.radius + t.bp.radius) continue;
+          const mtv = satMTV(pa, o.bp.hullPoly.map((q) => toWorld(q, o.pos, o.ang)));
+          if (!mtv) continue;
+          t.pos.x += mtv.x * mtv.depth;
+          t.pos.y += mtv.y * mtv.depth;
+          const vn = t.vel.x * mtv.x + t.vel.y * mtv.y;
+          if (vn < 0) {
+            t.vel.x -= mtv.x * vn;
+            t.vel.y -= mtv.y * vn;
+          }
+        }
         if (n) {
           const ex = n.x - t.pos.x;
           const ey = n.y - t.pos.y;

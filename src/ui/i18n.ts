@@ -167,11 +167,58 @@ const ZH: Record<string, string> = {
   'Release to fire · slide back to the centre to cancel': '放開就開火 · 拉回中心可取消',
   'BRAKE: hold to drift · SMOKE: drag to throw': '手剎：按住甩尾急停 · 煙霧：拖曳選方向',
   '+ / − zoom · zoomed in, touch the battlefield to aim precisely': '＋/－ 縮放 · 放大時按住戰場可精準瞄準',
+  // multiplayer
+  MULTIPLAYER: '多人連線',
+  'Create a room': '建立房間',
+  'You host the battle on this device. Share the room code with friends.': '由這支手機主持戰鬥，把房號分享給朋友。',
+  'CREATE ROOM': '建立房間',
+  'Join a room': '加入房間',
+  'Enter the 5-letter room code from the host.': '輸入房主給你的 5 碼房號。',
+  JOIN: '加入',
+  'Up to 5 vs 5 players — empty places are filled with AI tanks. Same Wi-Fi connects best.': '最多 5 對 5，空位由 AI 補上。在同一個 Wi-Fi 連線最穩。',
+  Cancel: '取消',
+  'Room not found — check the code.': '找不到房間，請確認房號。',
+  'The room is full.': '房間已滿。',
+  'That battle has already started.': '這場戰鬥已經開始了。',
+  'Different game versions — reload the page on both devices.': '遊戲版本不同，請兩邊都重新整理頁面。',
+  'Could not reach the matchmaking server. Check the connection and try again.': '連不上配對伺服器，請檢查網路後再試一次。',
+  'This browser does not support multiplayer (WebRTC).': '這個瀏覽器不支援多人連線（WebRTC）。',
+  'Connection failed': '連線失敗',
+  'Creating room…': '建立房間中…',
+  left: '已離開',
+  'Room codes have 5 letters.': '房號是 5 個字元。',
+  'Joining room': '加入房間',
+  'The host closed the room': '房主已關閉房間',
+  'Connection to the host lost': '與房主的連線中斷',
+  'Team A': 'A 隊',
+  'Team B': 'B 隊',
+  'Switch team': '換隊',
+  Leave: '離開',
+  ROOM: '房號',
+  Invite: '邀請',
+  'START BATTLE': '開始戰鬥',
+  'Waiting for the host to start…': '等待房主開始…',
+  'Your device runs the battle — keep the game open until it ends.': '戰鬥由你的手機運算，結束前請不要關掉遊戲。',
+  'Empty places are filled with AI tanks.': '空位由 AI 坦克補上。',
+  'That team is full': '該隊已滿',
+  'Close the room?': '關閉房間？',
+  'Everyone in the room will be disconnected.': '房間裡的所有人都會斷線。',
+  'Close room': '關閉房間',
+  'Join my tank battle — room': '來跟我打坦克！房號',
+  'Invite link copied': '已複製邀請連結',
+  'Pick up to 3 vehicles. The first one starts the battle.': '最多選 3 輛，第一輛先出擊。',
+  Done: '完成',
+  'Could not sync with the host': '無法與房主同步',
+  Menu: '選單',
+  'Multiplayer battles keep running.': '多人戰鬥不會暫停。',
+  'Leaving ends the battle for everyone': '你離開的話，所有人的戰鬥都會結束',
 };
 
 export function t(s: string): string {
   if (lang === 'zh') {
     if (ZH[s]) return ZH[s];
+    const left = s.match(/^(.*) left the battle$/);
+    if (left) return `${left[1]} 已離開戰鬥（由 AI 接手）`;
     // composed module messages, e.g. "Engine destroyed"
     const m = s.match(/^(.*) (destroyed|damaged|knocked out|wounded)$/);
     if (m) {
