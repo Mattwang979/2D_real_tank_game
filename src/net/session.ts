@@ -632,6 +632,7 @@ export class ClientGame implements NetSession {
   private inT = 0;
   private pingT = 0;
   private fireSentAt = 0;
+  private lastMsg = performance.now();
   gone = false;
 
   constructor(room: ClientRoom, b: Battle) {
@@ -663,6 +664,7 @@ export class ClientGame implements NetSession {
 
   onMsg(m: HostMsg) {
     const b = this.b;
+    this.lastMsg = performance.now();
     if (m.t === 'u') {
       if (m.n) for (const i of m.n) this.addTank(i);
       if (m.s) this.applySnap(m.s);
@@ -844,7 +846,9 @@ export class ClientGame implements NetSession {
   afterUpdate() {}
 
   info(): string | null {
-    return this.gone ? 'OFFLINE' : `${Math.round(this.rtt)} ms`;
+    if (this.gone) return '⚠ OFFLINE';
+    if (performance.now() - this.lastMsg > 2500) return '⚠ HOST NOT RESPONDING';
+    return `${Math.round(this.rtt)} ms`;
   }
 
   leave() {

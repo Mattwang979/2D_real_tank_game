@@ -212,6 +212,8 @@ const ZH: Record<string, string> = {
   Menu: '選單',
   'Multiplayer battles keep running.': '多人戰鬥不會暫停。',
   'Leaving ends the battle for everyone': '你離開的話，所有人的戰鬥都會結束',
+  OFFLINE: '已離線',
+  'HOST NOT RESPONDING': '房主沒有回應',
 };
 
 export function t(s: string): string {

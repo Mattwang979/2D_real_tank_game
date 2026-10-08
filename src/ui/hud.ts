@@ -680,10 +680,22 @@ export class Hud {
     if (this.netInfo) {
       const size = clamp(H * 0.3, 96, 128);
       ctx.save();
-      ctx.font = '600 10px "Barlow Condensed", sans-serif';
       ctx.textAlign = 'left';
-      ctx.fillStyle = 'rgba(220,225,215,0.75)';
-      ctx.fillText(this.netInfo, s.l + 12, s.t + 10 + size + 10 + clamp(H * 0.25, 78, 104) + 14);
+      if (this.netInfo.startsWith('⚠')) {
+        // connection trouble: make it obvious
+        const msg = tr(this.netInfo.slice(2));
+        ctx.font = '700 15px "Barlow Condensed", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+        ctx.strokeText(`⚠ ${msg}`, W / 2, H * 0.62);
+        ctx.fillStyle = '#ff8a5c';
+        ctx.fillText(`⚠ ${msg}`, W / 2, H * 0.62);
+      } else {
+        ctx.font = '600 10px "Barlow Condensed", sans-serif';
+        ctx.fillStyle = 'rgba(220,225,215,0.75)';
+        ctx.fillText(this.netInfo, s.l + 12, s.t + 10 + size + 10 + clamp(H * 0.25, 78, 104) + 14);
+      }
       ctx.restore();
     }
     if (b.state === 'dead') this.drawDeath(ctx, W, H, s);
