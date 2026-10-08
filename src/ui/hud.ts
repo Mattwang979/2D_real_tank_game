@@ -420,6 +420,11 @@ export class Hud {
       for (const bt of this.buttons) if (bt.id === 'pause' || bt.id === 'zoom') this.drawRoundBtn(ctx, bt, bt.id === 'pause' ? 'II' : '⌕', false);
     }
     if (b.state === 'dead') this.drawDeath(ctx, W, H, s);
+    if (b.time < 4.5 && b.state === 'playing') this.drawBanner(ctx, W, H, tr('DOMINATION'), tr('Capture and hold point A'), '#f2b449', b.time < 0.4 ? b.time / 0.4 : b.time > 3.7 ? (4.5 - b.time) / 0.8 : 1);
+    if (b.state === 'ended') {
+      const win = b.result === 'victory';
+      this.drawBanner(ctx, W, H, tr(win ? 'VICTORY' : 'DEFEAT'), win ? tr('The enemy has been defeated') : tr('Your team has been defeated'), win ? '#f2b449' : '#e8473b', 1);
+    }
     if (this.tutorial > 0 && b.state === 'playing') this.drawTutorial(ctx, W, H);
     ctx.restore();
   }
@@ -873,6 +878,27 @@ export class Hud {
       } else if (bt.id === 'pause') this.drawRoundBtn(ctx, bt, 'II', false);
       else if (bt.id === 'zoom') this.drawRoundBtn(ctx, bt, this.r.zoomOut ? '−' : '⌕', this.r.zoomOut);
     }
+  }
+
+  private drawBanner(ctx: Ctx, W: number, H: number, title: string, sub: string, color: string, a: number) {
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, a));
+    const y = H * 0.3;
+    const g = ctx.createLinearGradient(0, 0, W, 0);
+    g.addColorStop(0, 'rgba(10,12,10,0)');
+    g.addColorStop(0.25, 'rgba(10,12,10,0.7)');
+    g.addColorStop(0.75, 'rgba(10,12,10,0.7)');
+    g.addColorStop(1, 'rgba(10,12,10,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, y - 34, W, 68);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = color;
+    ctx.font = '700 34px "Barlow Condensed", sans-serif';
+    ctx.fillText(title, W / 2, y - 6);
+    ctx.fillStyle = '#e8e8de';
+    ctx.font = '500 14px "Barlow Condensed", sans-serif';
+    ctx.fillText(sub, W / 2, y + 20);
+    ctx.restore();
   }
 
   private drawTutorial(ctx: Ctx, W: number, H: number) {

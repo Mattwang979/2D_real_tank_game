@@ -58,7 +58,7 @@ export interface BattleHooks {
 
 const AI_NAMES = ['Anvil', 'Badger', 'Cobalt', 'Drake', 'Ember', 'Falcon', 'Granite', 'Hammer', 'Iron', 'Jackal', 'Kodiak', 'Lynx', 'Mason', 'Nomad', 'Onyx', 'Pike', 'Quarry', 'Raven', 'Sable', 'Talon', 'Ursa', 'Viper', 'Wolf', 'Yukon', 'Zephyr', 'Bishop', 'Cutter', 'Dusty', 'Flint', 'Gunner'];
 
-export const TICKETS = 650;
+export const TICKETS = 800;
 export const KILL_TICKETS = 45;
 export const BATTLE_TIME = 12 * 60;
 
@@ -79,7 +79,7 @@ export class Battle {
 
   capture = { owner: -1 as -1 | 0 | 1, progress: 0, contested: false, inside: [0, 0] };
   tickets: [number, number] = [TICKETS, TICKETS];
-  reinforcements: [number, number] = [6, 6];
+  reinforcements: [number, number] = [8, 8];
   respawnQueue: Array<{ team: 0 | 1; at: number }> = [];
   usedLineup = new Set<string>();
   state: 'playing' | 'dead' | 'ended' = 'playing';
@@ -664,7 +664,7 @@ export class Battle {
     }
     if (cap.owner >= 0) {
       const enemy = cap.owner === 0 ? 1 : 0;
-      this.tickets[enemy] = Math.max(0, this.tickets[enemy] - 2.2 * dt);
+      this.tickets[enemy] = Math.max(0, this.tickets[enemy] - 1.8 * dt);
     }
   }
 

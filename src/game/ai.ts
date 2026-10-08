@@ -29,6 +29,9 @@ export class AIController {
   lastPos: V2;
   /** time when the AI may fire at its current target (reaction delay) */
   fireAfter = 0;
+  /** optional detour waypoint taken before heading to the goal (flanking routes) */
+  via: V2 | null = null;
+  private usedVia = false;
 
   constructor(tank: Tank, b: Battle, role: Role) {
     this.tank = tank;
@@ -65,7 +68,24 @@ export class AIController {
       }
       if (ownCap && this.role === 'capper' && rand.chance(0.5)) this.role = 'support';
     }
-    if (this.goal) this.path = b.nav.findPath(t.pos, this.goal) ?? [this.goal];
+    // flanking detour: approach through a side lane instead of the direct line
+    const far = dist(t.pos, cap) > 130;
+    if (far && !this.usedVia && (this.role === 'flank' || (this.role === 'capper' && rand.chance(0.4)))) {
+      const toSpawnA = Math.atan2(spawn.y - cap.y, spawn.x - cap.x);
+      const side = rand.chance(0.5) ? 1 : -1;
+      for (let i = 0; i < 10; i++) {
+        const a = toSpawnA + side * rand.range(0.7, 1.15);
+        const r = rand.range(75, 115);
+        const p = { x: cap.x + Math.cos(a) * r, y: cap.y + Math.sin(a) * r };
+        if (p.x > 15 && p.y > 15 && p.x < b.map.size - 15 && p.y < b.map.size - 15 && b.nav.free(p)) {
+          this.via = p;
+          break;
+        }
+      }
+      this.usedVia = true;
+    }
+    const target = this.via ?? this.goal;
+    if (target) this.path = b.nav.findPath(t.pos, target) ?? [target];
   }
 
   private pickTarget(now: number) {
@@ -166,7 +186,9 @@ export class AIController {
     this.repath -= dt;
     if (this.repath <= 0 || !this.goal) {
       this.repath = rand.range(5, 9);
-      this.chooseGoal();
+      if (this.via) {
+        this.path = b.nav.findPath(t.pos, this.via) ?? [this.via];
+      } else this.chooseGoal();
     }
 
     const e = this.target;
@@ -237,6 +259,10 @@ export class AIController {
       return;
     }
     // follow path
+    if (this.via && dist(t.pos, this.via) < 12) {
+      this.via = null;
+      if (this.goal) this.path = b.nav.findPath(t.pos, this.goal) ?? [this.goal];
+    }
     while (this.path.length && dist(t.pos, this.path[0]) < 5) this.path.shift();
     const wp = this.path[0] ?? this.goal;
     if (!wp || dist(t.pos, wp) < 4) {

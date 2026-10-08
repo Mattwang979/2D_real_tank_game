@@ -151,6 +151,7 @@ async function startBattle() {
 function openPause() {
   if (!battle) return;
   paused = true;
+  audio.pause();
   let close = () => {};
   const c = h(
     'div',
@@ -172,7 +173,10 @@ function openPause() {
       h('button', { class: 'btn danger', onclick: () => (close(), confirmBox(t('Leave battle'), () => leaveBattle())) }, t('Leave battle')),
     ),
   );
-  close = modal(c, () => (paused = false));
+  close = modal(c, () => {
+    paused = false;
+    audio.resume();
+  });
 }
 
 function leaveBattle() {

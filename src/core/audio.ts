@@ -29,6 +29,13 @@ class Audio {
     for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
   }
 
+  pause() {
+    if (this.ctx && this.ctx.state === 'running') void this.ctx.suspend();
+  }
+  resume() {
+    if (this.ctx && this.ctx.state === 'suspended') void this.ctx.resume();
+  }
+
   setVolume(v: number) {
     this.volume = v;
     if (this.master) this.master.gain.value = v;
