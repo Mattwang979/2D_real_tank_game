@@ -3,7 +3,7 @@
 import { type V2, DEG, angDiff, clamp, dist, pointSegDist, toWorld } from '../core/math';
 import { rand } from '../core/rng';
 import { predictShot } from './armor';
-import { losBlocked } from './map';
+import { bermCover, losBlocked } from './map';
 import type { Battle } from './battle';
 import type { Carrier } from './carrier';
 import type { Tank } from './tank';
@@ -56,8 +56,15 @@ export class AIController {
       const r = rand.range(0, cap.r * 0.6);
       this.goal = { x: cap.x + Math.cos(a) * r, y: cap.y + Math.sin(a) * r };
     } else {
-      // overwatch position: on our side of the capture point
+      // overwatch position: on our side of the capture point — a hull-down spot behind an earthwork if one is free
       const toSpawn = Math.atan2(spawn.y - cap.y, spawn.x - cap.x);
+      const hd = rand.chance(0.7) ? this.hullDownSpot(toSpawn) : null;
+      if (hd) {
+        this.goal = hd;
+        if (ownCap && this.role === 'capper' && rand.chance(0.5)) this.role = 'support';
+        this.path = b.nav!.findPath(t.pos, hd) ?? [hd];
+        return;
+      }
       for (let i = 0; i < 12; i++) {
         const spread = this.role === 'flank' ? 1.5 : 0.9;
         const a = toSpawn + rand.range(-spread, spread);
@@ -89,6 +96,26 @@ export class AIController {
     }
     const target = this.via ?? this.goal;
     if (target) this.path = b.nav!.findPath(t.pos, target) ?? [target];
+  }
+
+  /** A free hull-down spot on our side of the capture point that faces the point. */
+  private hullDownSpot(toSpawn: number): V2 | null {
+    const b = this.b;
+    const cap = b.map.capture;
+    const t = this.tank;
+    const cands = b.map.hullDown.filter((s) => {
+      const d = dist(s, cap);
+      if (d < 38 || d > (this.role === 'flank' ? 140 : 115)) return false;
+      if (Math.abs(angDiff(Math.atan2(s.y - cap.y, s.x - cap.x), toSpawn)) > 1.25) return false;
+      if (!Number.isNaN(s.face) && Math.abs(angDiff(s.face, Math.atan2(cap.y - s.y, cap.x - s.x))) > 1.0) return false;
+      if (!b.nav!.free(s)) return false;
+      for (const o of b.tanks) if (o !== t && o.alive && dist(o.pos, s) < 7) return false;
+      for (const ai of b.ais.values()) if (ai !== this && ai.goal && dist(ai.goal, s) < 7) return false;
+      return true;
+    });
+    if (!cands.length) return null;
+    const s = cands[Math.floor(rand.next() * cands.length)];
+    return { x: s.x, y: s.y };
   }
 
   private pickTarget(now: number) {
@@ -135,14 +162,15 @@ export class AIController {
     }
     const shell = t.spec.gun.shells[t.shellIdx];
     const from = t.muzzle();
+    const covered = bermCover(this.b.map, from, e.pos);
     let best = cands[0];
     let bestScore = -Infinity;
     for (const c of cands) {
       const wp = toWorld(c, e.pos, e.ang);
       const ang = Math.atan2(wp.y - from.y, wp.x - from.x);
-      const pr = predictShot(t, e, shell, from, { x: Math.cos(ang), y: Math.sin(ang) });
-      let s = pr.outcome === 'pen' ? 3 + (pr.pen - pr.eff) / 100 : pr.outcome === 'maybe' ? 1.5 : pr.outcome === 'none' ? -2 : 0;
-      if (c.x === 0 && c.y === 0) s += 0.3; // centre mass is easiest to hit
+      const pr = predictShot(t, e, shell, from, { x: Math.cos(ang), y: Math.sin(ang) }, covered);
+      let s = pr.outcome === 'pen' ? 3 + (pr.pen - pr.eff) / 100 : pr.outcome === 'maybe' ? 1.5 : pr.outcome === 'none' || pr.outcome === 'cover' ? -2 : 0;
+      if (c.x === 0 && c.y === 0 && !covered) s += 0.3; // centre mass is easiest to hit
       if (s > bestScore) {
         bestScore = s;
         best = c;
@@ -156,7 +184,7 @@ export class AIController {
         const sh = t.spec.gun.shells[i];
         const wp = toWorld(best, e.pos, e.ang);
         const ang = Math.atan2(wp.y - from.y, wp.x - from.x);
-        const pr = predictShot(t, e, sh, from, { x: Math.cos(ang), y: Math.sin(ang) });
+        const pr = predictShot(t, e, sh, from, { x: Math.cos(ang), y: Math.sin(ang) }, covered);
         if (pr.outcome === 'pen' && t.isReloaded()) {
           t.selectShell(i);
           break;

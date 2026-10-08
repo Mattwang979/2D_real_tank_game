@@ -11,7 +11,7 @@ import { VEHICLES, getVehicle, type ShellSpec, type VehicleSpec } from '../data/
 import { AIController } from './ai';
 import { type ImpactResult, fireTick, intersectTank, resolveImpact } from './armor';
 import { Effects } from './effects';
-import { type GameMap, type Tree, buildMap, collideStatic, losBlocked, MAPS, shellObstacleHit, type Contact } from './map';
+import { type GameMap, type Tree, bermCrossing, buildMap, collideStatic, losBlocked, MAPS, onBerm, shellObstacleHit, type Contact } from './map';
 import { CARRIER, type Carrier, carrierHit, driveCarrier } from './carrier';
 import { NavGrid } from './nav';
 import { Tank } from './tank';
@@ -19,6 +19,8 @@ import { canSee, visibilityPolygon } from './vision';
 
 export interface Projectile {
   id: number;
+  /** where the shell started (or last bounced): earthworks right in front of the gun don't stop it */
+  org: V2;
   x: number;
   y: number;
   dx: number;
@@ -48,9 +50,9 @@ export type BattleEvent =
 /** Compact effect events mirrored from host to clients. */
 export type NetFx =
   | { k: 'fire'; id: number; s: number }
-  | { k: 'shot'; pid: number; sid: number; x: number; y: number; dx: number; dy: number; v: number; s: number; r?: number }
+  | { k: 'shot'; pid: number; sid: number; x: number; y: number; dx: number; dy: number; v: number; s: number; r?: number; lo?: number }
   | { k: 'imp'; x: number; y: number; o: number; dx: number; dy: number; c: number; e: number; rx?: number; ry?: number; sp?: number; pid?: number; end?: number }
-  | { k: 'obs'; x: number; y: number; dx: number; dy: number; c: number; e: number; pid?: number }
+  | { k: 'obs'; x: number; y: number; dx: number; dy: number; c: number; e: number; pid?: number; so?: number }
   | { k: 'gren'; team: 0 | 1; g: number[][] }
   | { k: 'cloud'; id: number; x: number; y: number; rm: number; life: number; team: 0 | 1 }
   | { k: 'cdie'; id: number; x: number; y: number }
@@ -115,6 +117,8 @@ export const TICKETS = 800;
 export const KILL_TICKETS = 45;
 export const BATTLE_TIME = 12 * 60;
 export const TEAM_SIZE = 5;
+/** shells with a height roll at or above this fly at hull height (earthworks stop them) */
+export const LOW_SHOT = 0.45;
 /** smoke screen duration (s) */
 export const SMOKE_LIFE = 13;
 /** a queued shot is released once the gun is within this angle of the aim */
@@ -522,6 +526,7 @@ export class Battle {
 
     for (const t of this.tanks) {
       const prevReloaded = t.isReloaded();
+      t.terrainMul = t.alive && onBerm(this.map, t.pos) ? 0.5 : 1;
       t.update(dt, now);
       if (t.isPlayer && !prevReloaded && t.isReloaded() && t.alive) audio.reloadDone();
     }
@@ -633,17 +638,19 @@ export class Battle {
     this.netOut?.push({ k: 'imp', x: r2(x), y: r2(y), o: OUTCOMES.indexOf(outcome), dx: r3(dx), dy: r3(dy), c: caliber, e: explosive, rx: reflect ? r3(reflect.x) : undefined, ry: reflect ? r3(reflect.y) : undefined, sp: splash ? 1 : undefined, pid, end: end ? 1 : 0 });
   }
 
-  fxObstacle(x: number, y: number, dx: number, dy: number, caliber: number, explosive: number, pid?: number) {
+  fxObstacle(x: number, y: number, dx: number, dy: number, caliber: number, explosive: number, pid?: number, soft = false) {
     const ld = this.listenerDist({ x, y });
     if (explosive > 0) {
       this.fx.heBlast(x, y, explosive);
       audio.explosion(Math.cbrt(explosive) / 10, ld);
     } else {
-      this.fx.impactDust(x, y, caliber > 80);
-      this.fx.sparks(x, y, Math.atan2(-dy, -dx), 4, 0.9, 10);
+      // earth swallows the shell in a spray of dirt; stone and steel throw sparks
+      this.fx.impactDust(x, y, soft || caliber > 80);
+      if (soft) this.fx.impactDust(x - dx * 0.6, y - dy * 0.6, true);
+      else this.fx.sparks(x, y, Math.atan2(-dy, -dx), 4, 0.9, 10);
       audio.thud(ld);
     }
-    this.netOut?.push({ k: 'obs', x: r2(x), y: r2(y), dx: r3(dx), dy: r3(dy), c: caliber, e: explosive, pid });
+    this.netOut?.push({ k: 'obs', x: r2(x), y: r2(y), dx: r3(dx), dy: r3(dy), c: caliber, e: explosive, pid, so: soft ? 1 : undefined });
   }
 
   /** Explosion, blown-off turret and wreck fire for a destroyed tank. */
@@ -690,7 +697,7 @@ export class Battle {
         const sh = this.tanks.find((x) => x.id === e.sid);
         const shell = sh?.spec.gun.shells[e.s];
         if (!sh || !shell) break;
-        this.projectiles.push({ id: e.pid, x: e.x, y: e.y, dx: e.dx, dy: e.dy, speed: e.v, shell, shooter: sh, dist: e.r ? 3 : 0, age: 0, height: 0.5, penScale: 1, ignoreTank: e.r ? -1 : sh.id, ignoreBarrel: sh.id, ricochet: !!e.r });
+        this.projectiles.push({ id: e.pid, org: { x: e.x, y: e.y }, x: e.x, y: e.y, dx: e.dx, dy: e.dy, speed: e.v, shell, shooter: sh, dist: e.r ? 3 : 0, age: 0, height: e.lo ? 0.9 : 0.1, penScale: 1, ignoreTank: e.r ? -1 : sh.id, ignoreBarrel: sh.id, ricochet: !!e.r });
         break;
       }
       case 'imp':
@@ -699,7 +706,7 @@ export class Battle {
         break;
       case 'obs':
         if (e.pid !== undefined) this.projectiles = this.projectiles.filter((p) => p.id !== e.pid);
-        this.fxObstacle(e.x, e.y, e.dx, e.dy, e.c, e.e);
+        this.fxObstacle(e.x, e.y, e.dx, e.dy, e.c, e.e, undefined, !!e.so);
         break;
       case 'gren':
         for (const g of e.g) this.grenades.push({ x0: g[0], y0: g[1], x1: g[2], y1: g[3], t: 0, T: g[4], team: e.team });
@@ -754,8 +761,10 @@ export class Battle {
     const m = t.muzzle();
     const a = t.shotAngle();
     const id = this.projId++;
+    const height = rand.next();
     this.projectiles.push({
       id,
+      org: { x: m.x, y: m.y },
       x: m.x,
       y: m.y,
       dx: Math.cos(a),
@@ -765,14 +774,14 @@ export class Battle {
       shooter: t,
       dist: 0,
       age: 0,
-      height: rand.next(),
+      height,
       penScale: 1,
       ignoreTank: t.id,
       ignoreBarrel: t.id,
       ricochet: false,
     });
     this.fxFire(t, idx);
-    this.netOut?.push({ k: 'shot', pid: id, sid: t.id, x: r2(m.x), y: r2(m.y), dx: r3(Math.cos(a)), dy: r3(Math.sin(a)), v: shell.velocity * this.shellSpeedScale, s: idx });
+    this.netOut?.push({ k: 'shot', pid: id, sid: t.id, x: r2(m.x), y: r2(m.y), dx: r3(Math.cos(a)), dy: r3(Math.sin(a)), v: shell.velocity * this.shellSpeedScale, s: idx, lo: height >= LOW_SHOT ? 1 : undefined });
     t.revealedUntil = this.time + 2.5;
     // recoil nudges the tank backwards a little
     const kick = 0.25 * (t.spec.gun.caliber / 75) * (30 / t.spec.weight);
@@ -953,6 +962,22 @@ export class Battle {
         if (h && (!best || h.t < best.t)) best = { t: h.t, tank: t, hit: h };
       }
       const obs = shellObstacleHit(this.map, a, b);
+      // earthworks stop shells flying at hull height (hull-down targets behind them)
+      const bc = p.height >= LOW_SHOT && !p.ricochet ? bermCrossing(this.map, a, b, p.org) : null;
+      const bT = bc ? bc.t : null;
+      // a hull nosing onto the bank's slope (within half its width past the crest) is still covered
+      const slope = bc && step > 0 ? (bc.w / 2 + 0.6) / step : 0;
+      if (bT !== null && (!best || bT < best.t + (best.hit?.part === 'hull' ? slope : 0)) && (!obs || bT < obs.t)) {
+        let carrierFirst = false;
+        for (const c of this.carriers) {
+          const ht = c.state === 'dead' ? null : carrierHit(c, a, b);
+          if (ht !== null && ht < bT) carrierFirst = true;
+        }
+        if (!carrierFirst) {
+          this.obstacleImpact(p, a.x + (b.x - a.x) * bT, a.y + (b.y - a.y) * bT, true);
+          continue;
+        }
+      }
       // thin-skinned crew carriers
       let cHit: { t: number; c: Carrier } | null = null;
       for (const c of this.carriers) {
@@ -979,10 +1004,10 @@ export class Battle {
         this.onImpact(p, best.tank, res);
         if (res.outcome === 'ricochet' && res.reflect) {
           const w = res.world;
-          const np = { ...p, id: this.projId++, x: w.x + res.reflect.x * 0.2, y: w.y + res.reflect.y * 0.2, dx: res.reflect.x, dy: res.reflect.y, speed: p.speed * 0.7, penScale: p.penScale * 0.55, ignoreTank: best.tank.id, age: 0, ricochet: true, dist: d };
+          const np = { ...p, id: this.projId++, org: { x: w.x, y: w.y }, x: w.x + res.reflect.x * 0.2, y: w.y + res.reflect.y * 0.2, dx: res.reflect.x, dy: res.reflect.y, speed: p.speed * 0.7, penScale: p.penScale * 0.55, ignoreTank: best.tank.id, age: 0, ricochet: true, dist: d };
           keep.push(np);
           const si = p.shooter.spec.gun.shells.indexOf(p.shell);
-          this.netOut?.push({ k: 'shot', pid: np.id, sid: p.shooter.id, x: r2(np.x), y: r2(np.y), dx: r3(np.dx), dy: r3(np.dy), v: r2(np.speed), s: Math.max(0, si), r: 1 });
+          this.netOut?.push({ k: 'shot', pid: np.id, sid: p.shooter.id, x: r2(np.x), y: r2(np.y), dx: r3(np.dx), dy: r3(np.dy), v: r2(np.speed), s: Math.max(0, si), r: 1, lo: np.height >= LOW_SHOT ? 1 : undefined });
         } else if (res.outcome === 'barrel') {
           const w = res.world;
           keep.push({ ...p, x: w.x + p.dx * 0.3, y: w.y + p.dy * 0.3, ignoreBarrel: best.tank.id, penScale: p.penScale * 0.92, dist: d });
@@ -998,9 +1023,9 @@ export class Battle {
     this.projectiles = keep;
   }
 
-  private obstacleImpact(p: Projectile, x: number, y: number) {
+  private obstacleImpact(p: Projectile, x: number, y: number, soft = false) {
     const he = p.shell.type === 'HE';
-    this.fxObstacle(x, y, p.dx, p.dy, p.shell.caliber, he ? p.shell.explosive : 0, p.id);
+    this.fxObstacle(x, y, p.dx, p.dy, p.shell.caliber, he ? p.shell.explosive : 0, p.id, soft);
     if (he) {
       this.stampDecal('crater', x, y, 0.6 + Math.cbrt(p.shell.explosive) * 0.12, Math.floor(x * 31 + y));
       this.splash(p, x, y);
@@ -1300,6 +1325,7 @@ export class Battle {
       if (t === me && t.alive) {
         // client-side prediction for our own tank, gently corrected toward the host
         const prevReloaded = t.isReloaded();
+        t.terrainMul = onBerm(this.map, t.pos) ? 0.5 : 1;
         t.update(dt, this.time);
         if (!prevReloaded && t.isReloaded()) audio.reloadDone();
         this.collideTank(t, contacts);
@@ -1358,7 +1384,7 @@ export class Battle {
       const step = p.speed * dt;
       const a = { x: p.x, y: p.y };
       const b = { x: p.x + p.dx * step, y: p.y + p.dy * step };
-      let stop = !!shellObstacleHit(this.map, a, b);
+      let stop = !!shellObstacleHit(this.map, a, b) || (p.height >= LOW_SHOT && !p.ricochet && bermCrossing(this.map, a, b, p.org) !== null);
       for (const t of this.tanks) {
         if (stop) break;
         if (t.id === p.ignoreTank && p.age < 0.12) continue;

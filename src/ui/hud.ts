@@ -11,6 +11,7 @@ import { audio } from '../core/audio';
 import type { Battle, BattleEvent } from '../game/battle';
 import { BATTLE_TIME, TICKETS } from '../game/battle';
 import { CARRIER } from '../game/carrier';
+import { bermCover } from '../game/map';
 import { Tank } from '../game/tank';
 import { TEAM_COL, predColor, type BattleRenderer } from '../render/battleRender';
 import { drawXray, drawTankSprite, makeCanvas } from '../render/tankRender';
@@ -139,6 +140,9 @@ export class Hud {
   private fireFlash = 0;
   private prevRepairT = 0;
   private prevRecoil = 0;
+  /** our tank is hull-down against the nearest enemy */
+  hullDown = false;
+  private hullDownT = 0;
 
   constructor(b: Battle, r: BattleRenderer, canvas: HTMLCanvasElement, controls?: Controls) {
     this.b = b;
@@ -505,6 +509,22 @@ export class Hud {
     }
     if (this.prevRepairT > 0 && p.repairT <= 0 && p.repairCd > 0) this.note(tr('Repairs complete'), '#9fd3ff');
     this.prevRepairT = p.repairT;
+    // hull-down check against the nearest spotted enemy
+    this.hullDownT -= dt;
+    if (this.hullDownT <= 0) {
+      this.hullDownT = 0.25;
+      let near: Tank | null = null;
+      let nd = 320;
+      for (const e of b.tanks) {
+        if (!e.alive || e.team === p.team || !b.isSpotted(p.team, e)) continue;
+        const d = dist(e.pos, p.pos);
+        if (d < nd) {
+          nd = d;
+          near = e;
+        }
+      }
+      this.hullDown = !!near && bermCover(b.map, near.muzzle(), p.pos);
+    }
     // our gun just fired: flash the button and kick the camera
     if (p.recoil > this.prevRecoil + 0.3) {
       this.fireFlash = 0.15;
@@ -838,6 +858,15 @@ export class Hud {
         for (const p of bd.poly) g.lineTo(p.x, p.y);
         g.fill();
       }
+      g.strokeStyle = 'rgba(200,180,130,0.75)';
+      g.lineWidth = 2.6;
+      g.lineCap = 'round';
+      for (const bm of b.map.berms) {
+        g.beginPath();
+        g.moveTo(bm.pts[0].x, bm.pts[0].y);
+        for (const q of bm.pts) g.lineTo(q.x, q.y);
+        g.stroke();
+      }
       g.fillStyle = '#6d665a';
       for (const rk of b.map.rocks) {
         g.beginPath();
@@ -971,6 +1000,12 @@ export class Hud {
       ctx.fillStyle = '#ff6b5a';
       ctx.font = '700 10px "Barlow Condensed", sans-serif';
       ctx.fillText(`👁 ${tr('SPOTTED')}`, x + w * 0.7, yy);
+      yy += 13;
+    }
+    if (this.hullDown) {
+      ctx.fillStyle = '#a6e07c';
+      ctx.font = '700 10px "Barlow Condensed", sans-serif';
+      ctx.fillText(tr('HULL-DOWN'), x + w * 0.7, yy);
       yy += 13;
     }
     if (p.pendingSwapRole) {
@@ -1110,9 +1145,11 @@ export class Hud {
     const pr = this.r.aimPrediction;
     if (!pr || pr.outcome === 'none') return;
     const txt =
-      pr.outcome === 'ricochet'
-        ? `${tr(pr.label)} · ${tr('RICOCHET LIKELY')}`
-        : `${tr(pr.label)} · ${tr('EFF')} ${Math.round(pr.eff)}mm / ${tr('PEN')} ${Math.round(pr.pen)}mm`;
+      pr.outcome === 'cover'
+        ? tr('HULL-DOWN — only the turret can be hit')
+        : pr.outcome === 'ricochet'
+          ? `${tr(pr.label)} · ${tr('RICOCHET LIKELY')}`
+          : `${tr(pr.label)} · ${tr('EFF')} ${Math.round(pr.eff)}mm / ${tr('PEN')} ${Math.round(pr.pen)}mm`;
     ctx.save();
     ctx.font = '700 12px "Barlow Condensed", sans-serif';
     ctx.textAlign = 'center';

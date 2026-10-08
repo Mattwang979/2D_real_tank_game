@@ -32,6 +32,21 @@ export class NavGrid {
           this.cost[y * this.n + x] = Math.max(this.cost[y * this.n + x], t.shrub ? 1.6 : 3.5);
         }
     }
+    // earthworks are slow going: prefer the gaps
+    for (const bm of map.berms) {
+      for (let i = 0; i < bm.pts.length - 1; i++) {
+        const a = bm.pts[i];
+        const b = bm.pts[i + 1];
+        const L = Math.hypot(b.x - a.x, b.y - a.y);
+        for (let d = 0; d <= L; d += this.cell * 0.5) {
+          const x = Math.floor((a.x + ((b.x - a.x) * d) / (L || 1)) / this.cell);
+          const y = Math.floor((a.y + ((b.y - a.y) * d) / (L || 1)) / this.cell);
+          if (x < 0 || y < 0 || x >= this.n || y >= this.n) continue;
+          const i2 = y * this.n + x;
+          this.cost[i2] = Math.max(this.cost[i2], 2.4);
+        }
+      }
+    }
     for (const r of map.roads) {
       for (let i = 0; i < r.pts.length - 1; i++) {
         const a = r.pts[i];

@@ -72,6 +72,22 @@ export interface Decor {
   seed: number;
 }
 
+/** Low earthwork: a ridge, a U-shaped tank revetment or a big crater rim. Shells flying at
+ * hull height that cross it near their target are stopped — the target is hull-down. */
+export interface Berm {
+  id: number;
+  pts: V2[]; // crest polyline
+  w: number; // crest width (m)
+  kind: 'ridge' | 'pit' | 'crater';
+}
+
+/** A good hull-down spot: park here facing `face` (NaN = any direction). */
+export interface HullDownSpot {
+  x: number;
+  y: number;
+  face: number;
+}
+
 export interface SmokeCloud {
   id: number;
   x: number;
@@ -115,6 +131,8 @@ export interface GameMap {
   grid: SpatialGrid;
   occluders: Array<{ a: V2; b: V2 }>; // vision blocking segments
   smokes: SmokeCloud[]; // runtime smoke screens
+  berms: Berm[];
+  hullDown: HullDownSpot[];
 }
 
 export const MAPS: MapDef[] = [
@@ -126,7 +144,7 @@ export const MAPS: MapDef[] = [
 // ---------------------------------------------------------------------------
 // Spatial grid
 
-type Obs = { type: 'b'; o: Building } | { type: 'r'; o: Rock } | { type: 'w'; o: Wall } | { type: 't'; o: Tree };
+type Obs = { type: 'b'; o: Building } | { type: 'r'; o: Rock } | { type: 'w'; o: Wall } | { type: 't'; o: Tree } | { type: 'e'; o: Berm; i: number };
 
 export class SpatialGrid {
   cell = 24;
@@ -213,6 +231,8 @@ class Builder {
       grid: new SpatialGrid(sz),
       occluders: [],
       smokes: [],
+      berms: [],
+      hullDown: [],
     };
   }
   roadDist(x: number, y: number): number {
@@ -302,6 +322,124 @@ class Builder {
     const bb = aabb(poly);
     this.m.grid.insert({ type: 'w', o: wall }, bb.x0, bb.y0, bb.x1, bb.y1);
     return wall;
+  }
+  /** Add an earthwork if the whole crest is on open ground. */
+  addBerm(pts: V2[], w: number, kind: Berm['kind'], face = NaN): Berm | null {
+    const S = this.m.size;
+    for (const p of pts) {
+      if (p.x < 10 || p.y < 10 || p.x > S - 10 || p.y > S - 10) return null;
+      if (this.reserved(p.x, p.y, 3)) return null;
+      if (solidAt(this.m, p, w / 2 + 2.5)) return null;
+      if (this.roadDist(p.x, p.y) < w / 2 + 1.5) return null;
+    }
+    // stay clear of other earthworks
+    for (const o of this.m.berms) for (const q of o.pts) for (const p of pts) if (Math.hypot(p.x - q.x, p.y - q.y) < 7) return null;
+    const b: Berm = { id: this.nextId++, pts, w, kind };
+    this.m.berms.push(b);
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i];
+      const c = pts[i + 1];
+      this.m.grid.insert({ type: 'e', o: b, i }, Math.min(a.x, c.x) - w, Math.min(a.y, c.y) - w, Math.max(a.x, c.x) + w, Math.max(a.y, c.y) + w);
+    }
+    // trees growing on the crest would look odd
+    for (const t of this.m.trees) {
+      if (!t.alive) continue;
+      for (let i = 0; i < pts.length - 1; i++) if (pointSegDist(t, pts[i], pts[i + 1]) < w / 2 + 0.8) t.alive = false;
+    }
+    this.m.trees = this.m.trees.filter((t) => t.alive);
+    // hull-down spots
+    if (kind === 'ridge') {
+      for (let i = 0; i < pts.length - 1; i++) {
+        const a = pts[i];
+        const c = pts[i + 1];
+        const L = Math.hypot(c.x - a.x, c.y - a.y);
+        const nx = -(c.y - a.y) / L;
+        const ny = (c.x - a.x) / L;
+        for (let d = 2.5; d < L - 1; d += 5) {
+          const px = a.x + ((c.x - a.x) * d) / L;
+          const py = a.y + ((c.y - a.y) * d) / L;
+          for (const sgn of [1, -1]) {
+            const sp = { x: px - nx * sgn * (w / 2 + 2.6), y: py - ny * sgn * (w / 2 + 2.6) };
+            if (!solidAt(this.m, sp, 3)) this.m.hullDown.push({ x: sp.x, y: sp.y, face: Math.atan2(ny * sgn, nx * sgn) });
+          }
+        }
+      }
+    } else {
+      let cx = 0;
+      let cy = 0;
+      for (const p of pts) {
+        cx += p.x;
+        cy += p.y;
+      }
+      this.m.hullDown.push({ x: cx / pts.length, y: cy / pts.length, face });
+    }
+    return b;
+  }
+  /** A gently curved ridge across direction `ang` (crest runs perpendicular to `ang`). */
+  ridge(x: number, y: number, ang: number, len: number, w = 2.4): Berm | null {
+    const R = this.rng;
+    const along = ang + Math.PI / 2;
+    const bend = R.range(-0.25, 0.25);
+    const n = Math.max(3, Math.round(len / 7));
+    const pts: V2[] = [];
+    for (let i = 0; i <= n; i++) {
+      const k = i / n - 0.5;
+      const off = Math.cos(k * Math.PI) * bend * len * 0.35; // bow toward the enemy
+      pts.push({ x: x + Math.cos(along) * k * len + Math.cos(ang) * off, y: y + Math.sin(along) * k * len + Math.sin(ang) * off });
+    }
+    return this.addBerm(pts, w, 'ridge');
+  }
+  /** U-shaped tank revetment open at the back (`face` = direction it covers). */
+  revetment(x: number, y: number, face: number, r = 4.6, w = 2.2): Berm | null {
+    const pts: V2[] = [];
+    const n = 10;
+    const gap = 1.05; // half-width of the opening (rad) at the back
+    for (let i = 0; i <= n; i++) {
+      const a = face + Math.PI + gap + ((Math.PI * 2 - gap * 2) * i) / n;
+      pts.push({ x: x + Math.cos(a) * r, y: y + Math.sin(a) * r });
+    }
+    return this.addBerm(pts, w, 'pit', face);
+  }
+  /** Big crater with a raised rim all round: hull-down in every direction. */
+  crater(x: number, y: number, r = 4.8, w = 2.0): Berm | null {
+    const pts: V2[] = [];
+    const n = 12;
+    for (let i = 0; i <= n; i++) {
+      const a = (i / n) * Math.PI * 2;
+      pts.push({ x: x + Math.cos(a) * r, y: y + Math.sin(a) * r });
+    }
+    return this.addBerm(pts, w, 'crater');
+  }
+  /** Earthworks for both sides: ridges facing the capture point, revetments, craters. */
+  earthworks(nRidge: number, nPit: number, nCrater: number, w: number) {
+    const m = this.m;
+    const R = this.rng;
+    const cap = m.capture;
+    for (const team of [0, 1] as const) {
+      const sp = m.spawns[team][2];
+      const toSpawn = Math.atan2(sp.y - cap.y, sp.x - cap.x);
+      let made = 0;
+      for (let i = 0; i < 60 && made < nRidge; i++) {
+        const a = toSpawn + R.range(-0.9, 0.9);
+        const d = R.range(48, 95);
+        const x = cap.x + Math.cos(a) * d;
+        const y = cap.y + Math.sin(a) * d;
+        // crest across the line to the capture point; the bow faces the point
+        if (this.ridge(x, y, a + Math.PI, R.range(16, 30), w)) made++;
+      }
+      made = 0;
+      for (let i = 0; i < 60 && made < nPit; i++) {
+        const a = toSpawn + R.range(-1.1, 1.1);
+        const d = R.range(70, 130);
+        const x = cap.x + Math.cos(a) * d;
+        const y = cap.y + Math.sin(a) * d;
+        if (this.revetment(x, y, Math.atan2(cap.y - y, cap.x - x) + R.range(-0.3, 0.3), R.range(4.4, 5.0), w * 0.92)) made++;
+      }
+    }
+    let made = 0;
+    for (let i = 0; i < 80 && made < nCrater; i++) {
+      if (this.crater(R.range(40, m.size - 40), R.range(40, m.size - 40), R.range(4.6, 5.4), w * 0.85)) made++;
+    }
   }
   forest(cx: number, cy: number, rad: number, n: number, rMin: number, rMax: number) {
     for (let i = 0; i < n * 3 && n > 0; i++) {
@@ -476,6 +614,7 @@ function buildValley(b: Builder) {
   for (let i = 0; i < 12; i++) b.addRock(R.range(20, S - 20), R.range(20, S - 20), R.range(1.2, 2.6), '#6c6a62');
   for (let i = 0; i < 16; i++) m.decor.push({ kind: 'crater', x: R.range(30, S - 30), y: R.range(30, S - 30), r: R.range(1.5, 3.5), ang: 0, seed: R.int(0, 1e9) });
   for (let i = 0; i < 10; i++) m.decor.push({ kind: 'puddle', x: R.range(30, S - 30), y: R.range(30, S - 30), r: R.range(2, 5), ang: R.range(0, 3), seed: R.int(0, 1e9) });
+  b.earthworks(3, 3, 5, 2.4);
 }
 
 function buildOutpost(b: Builder) {
@@ -558,6 +697,7 @@ function buildOutpost(b: Builder) {
   }
   for (let i = 0; i < 22; i++) m.decor.push({ kind: R.chance(0.6) ? 'crater' : 'barrel', x: R.range(30, S - 30), y: R.range(30, S - 30), r: R.range(1, 3), ang: R.range(0, 6), seed: R.int(0, 1e9) });
   for (let i = 0; i < 14; i++) m.decor.push({ kind: 'crate', x: R.range(150, 300), y: R.range(150, 300), r: R.range(0.6, 1.0), ang: R.range(0, 6), seed: R.int(0, 1e9) });
+  b.earthworks(3, 4, 4, 2.5);
 }
 
 function buildCity(b: Builder) {
@@ -630,6 +770,7 @@ function buildCity(b: Builder) {
     const y = R.range(40, S - 40);
     b.addWall({ x: x - 3, y }, { x: x + 3, y: y + R.range(-1, 1) }, 1.0, 'sandbag');
   }
+  b.earthworks(2, 2, 3, 2.2);
 }
 
 export function buildMap(def: MapDef, seed = 1234): GameMap {
@@ -703,6 +844,50 @@ export function shellObstacleHit(m: GameMap, a: V2, b: V2): { t: number; kind: '
     }
   }
   return best;
+}
+
+/** Closest point along a→b where the segment crosses an earthwork crest at least `minFrom` metres
+ * from `origin` (shells leaving a tank's own cover are not stopped). Returns t along a→b. */
+export function bermCrossing(m: GameMap, a: V2, b: V2, origin: V2, minFrom = 8): { t: number; w: number } | null {
+  if (!m.berms.length) return null;
+  const near = m.grid.query(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.max(a.x, b.x), Math.max(a.y, b.y));
+  let best: { t: number; w: number } | null = null;
+  for (const o of near) {
+    if (o.type !== 'e') continue;
+    const r = segSeg(a, b, o.o.pts[o.i], o.o.pts[o.i + 1]);
+    if (!r) continue;
+    const x = a.x + (b.x - a.x) * r.t;
+    const y = a.y + (b.y - a.y) * r.t;
+    if (Math.hypot(x - origin.x, y - origin.y) < minFrom) continue;
+    if (best === null || r.t < best.t) best = { t: r.t, w: o.o.w };
+  }
+  return best;
+}
+
+/** Is a target at `to` hull-down from a shooter at `from` (an earthwork just in front of it)? */
+export function bermCover(m: GameMap, from: V2, to: V2): boolean {
+  if (!m.berms.length) return false;
+  const near = m.grid.query(to.x - 10, to.y - 10, to.x + 10, to.y + 10);
+  for (const o of near) {
+    if (o.type !== 'e') continue;
+    const r = segSeg(from, to, o.o.pts[o.i], o.o.pts[o.i + 1]);
+    if (!r) continue;
+    const x = from.x + (to.x - from.x) * r.t;
+    const y = from.y + (to.y - from.y) * r.t;
+    if (Math.hypot(x - to.x, y - to.y) < 9 && Math.hypot(x - from.x, y - from.y) >= 8) return true;
+  }
+  return false;
+}
+
+/** Is the point on an earthwork crest (slow going)? */
+export function onBerm(m: GameMap, p: V2): boolean {
+  if (!m.berms.length) return false;
+  const near = m.grid.query(p.x - 3, p.y - 3, p.x + 3, p.y + 3);
+  for (const o of near) {
+    if (o.type !== 'e') continue;
+    if (pointSegDist(p, o.o.pts[o.i], o.o.pts[o.i + 1]) < o.o.w / 2 + 0.9) return true;
+  }
+  return false;
 }
 
 export interface Contact {

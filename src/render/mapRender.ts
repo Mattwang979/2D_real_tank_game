@@ -2,7 +2,7 @@
 
 import type { V2 } from '../core/math';
 import { Rng } from '../core/rng';
-import type { Building, GameMap, Theme, Tree, Wall } from '../game/map';
+import type { Berm, Building, GameMap, Theme, Tree, Wall } from '../game/map';
 import { makeCanvas } from './tankRender';
 
 type Ctx = CanvasRenderingContext2D;
@@ -217,6 +217,23 @@ export class MapRenderer {
       this.drawDecal(ctx, d);
     }
 
+    // earthworks
+    for (const bm of m.berms) {
+      let bx0 = Infinity;
+      let by0 = Infinity;
+      let bx1 = -Infinity;
+      let by1 = -Infinity;
+      for (const p of bm.pts) {
+        bx0 = Math.min(bx0, p.x);
+        by0 = Math.min(by0, p.y);
+        bx1 = Math.max(bx1, p.x);
+        by1 = Math.max(by1, p.y);
+      }
+      const pad = bm.w + 4;
+      if (bx1 + pad < wx0 || bx0 - pad > wx1 || by1 + pad < wy0 || by0 - pad > wy1) continue;
+      this.drawBerm(ctx, bm);
+    }
+
     // building shadows
     const sh = m.shadow;
     ctx.fillStyle = 'rgba(8,8,6,0.42)';
@@ -261,6 +278,85 @@ export class MapRenderer {
     ctx.fillRect(0, 0, size + 128, size + 128);
     ctx.restore();
     return c;
+  }
+
+  /** Raised earth bank: cast shadow, dug-out apron, body, sunlit flank, tufts / stones on the crest. */
+  private drawBerm(ctx: Ctx, bm: Berm) {
+    const th = this.map.theme;
+    const [body, lit, dark] = th === 'desert' ? ['#a68f64', '#cdb98f', '#7a6644'] : th === 'city' ? ['#66625a', '#88837a', '#3e3c37'] : ['#5f5b39', '#808051', '#3b3925'];
+    const sh = this.map.shadow;
+    const pts = bm.pts;
+    const path = () => {
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    };
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    // scraped / excavated floor inside revetments and craters
+    if (bm.kind !== 'ridge') {
+      path();
+      ctx.closePath();
+      ctx.fillStyle = dark;
+      ctx.globalAlpha = 0.3;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    // apron of loose earth
+    path();
+    ctx.strokeStyle = dark;
+    ctx.globalAlpha = 0.28;
+    ctx.lineWidth = bm.w + 2.4;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    // cast shadow
+    ctx.save();
+    ctx.translate(sh.x * 0.9, sh.y * 0.9);
+    path();
+    ctx.strokeStyle = 'rgba(12,12,6,0.36)';
+    ctx.lineWidth = bm.w + 0.4;
+    ctx.stroke();
+    ctx.restore();
+    // body
+    path();
+    ctx.strokeStyle = body;
+    ctx.lineWidth = bm.w;
+    ctx.stroke();
+    // sunlit flank
+    ctx.save();
+    ctx.translate(-sh.x * 0.32, -sh.y * 0.32);
+    path();
+    ctx.strokeStyle = lit;
+    ctx.globalAlpha = 0.7;
+    ctx.lineWidth = bm.w * 0.45;
+    ctx.stroke();
+    ctx.restore();
+    // crest
+    path();
+    ctx.strokeStyle = 'rgba(255,255,230,0.14)';
+    ctx.lineWidth = 0.16;
+    ctx.stroke();
+    // tufts and stones
+    const rng = new Rng(bm.id * 7919);
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i];
+      const b = pts[i + 1];
+      const L = Math.hypot(b.x - a.x, b.y - a.y);
+      for (let d = 0; d < L; d += 0.9) {
+        const k = d / L;
+        const off = rng.range(-bm.w * 0.4, bm.w * 0.4);
+        const nx = -(b.y - a.y) / L;
+        const ny = (b.x - a.x) / L;
+        const x = a.x + (b.x - a.x) * k + nx * off;
+        const y = a.y + (b.y - a.y) * k + ny * off;
+        ctx.fillStyle = rng.chance(0.5) ? 'rgba(20,24,10,0.22)' : th === 'grass' ? 'rgba(110,130,70,0.3)' : 'rgba(230,215,180,0.2)';
+        ctx.beginPath();
+        ctx.arc(x, y, rng.range(0.12, 0.38), 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
   }
 
   /** Small-scale texture: grass clumps, tufts, sand ripples, pebbles, concrete slabs. */

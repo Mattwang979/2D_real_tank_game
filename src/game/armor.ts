@@ -97,17 +97,25 @@ export function intersectTank(t: Tank, p0: V2, p1: V2, heightRoll: number, barre
   const h0 = toLocal(p0, t.pos, t.ang);
   const h1 = toLocal(p1, t.pos, t.ang);
   const hullHit = edgeHit(t.bp.hullEdges, h0, h1);
+  // 2.5D: every shell flies at a random height. Below the hull roof it strikes the hull,
+  // above it the shell passes over the hull and can only strike the turret / superstructure.
+  const highShot = heightRoll < t.bp.turretShare;
   // turret (not present after a cook-off blew it away)
   let turHit: { t: number; edge: ArmorEdge } | null = null;
   if (!t.turretOff) {
     const tp = t.turretPos();
     const ta = t.turretWorldAng;
     turHit = edgeHit(t.bp.turretEdges, toLocal(p0, tp, ta), toLocal(p1, tp, ta));
+    if (!turHit && hullHit && highShot) {
+      // a high shell that is over the hull already may reach the turret just past the end of this step
+      const L = Math.hypot(p1.x - p0.x, p1.y - p0.y) || 1;
+      const k = 1 + (2 * reachOf(t)) / L;
+      const pe = { x: p0.x + (p1.x - p0.x) * k, y: p0.y + (p1.y - p0.y) * k };
+      const ext = edgeHit(t.bp.turretEdges, toLocal(p0, tp, ta), toLocal(pe, tp, ta));
+      if (ext) turHit = { t: ext.t * k, edge: ext.edge };
+    }
   }
-  // 2.5D: every shell flies at a random height. Below the hull roof it strikes the hull,
-  // above it the shell passes over the hull and can only strike the turret / superstructure.
   let chosen: ArmorHit | null = null;
-  const highShot = heightRoll < t.bp.turretShare;
   if (turHit && (highShot || !hullHit)) chosen = { t: turHit.t, part: 'turret', edge: turHit.edge, world: lerpP(p0, p1, turHit.t) };
   else if (hullHit) chosen = { t: hullHit.t, part: 'hull', edge: hullHit.edge, world: lerpP(p0, p1, hullHit.t) };
 
@@ -151,7 +159,8 @@ function effective(plate: Plate, cosH: number, shell: ShellSpec, extraNorm = 0) 
 }
 
 export interface Prediction {
-  outcome: 'pen' | 'maybe' | 'no' | 'ricochet' | 'none';
+  /** 'cover': only the hull is in the line of fire and an earthwork shields it (hull-down) */
+  outcome: 'pen' | 'maybe' | 'no' | 'ricochet' | 'none' | 'cover';
   eff: number;
   pen: number;
   label: string;
@@ -199,7 +208,7 @@ export interface PlateView {
  * Weak-spot map: for every armor edge facing `from`, the expected result of a hit there with `shell`.
  * Used by the aim overlay (green = penetrates, yellow = maybe, red = bounces / stopped).
  */
-export function plateMap(target: Tank, shell: ShellSpec, from: V2): PlateView[] {
+export function plateMap(target: Tank, shell: ShellSpec, from: V2, hullCovered = false): PlateView[] {
   const out: PlateView[] = [];
   const frames: Array<{ edges: ArmorEdge[]; pos: V2; ang: number; part: 'hull' | 'turret' }> = [{ edges: target.bp.hullEdges, pos: target.pos, ang: target.ang, part: 'hull' }];
   if (!target.turretOff) frames.push({ edges: target.bp.turretEdges, pos: target.turretPos(), ang: target.turretWorldAng, part: 'turret' });
@@ -213,24 +222,29 @@ export function plateMap(target: Tank, shell: ShellSpec, from: V2): PlateView[] 
       const dl = dirToLocal({ x: mx / d, y: my / d }, f.ang);
       const cosH = -(dl.x * e.n.x + dl.y * e.n.y);
       if (cosH <= 0.03) continue; // facing away from the shooter
-      const pr = judgeEdge(target, shell, e, f.part, cosH, d);
-      out.push({ a, b, n: dirToWorld(e.n, f.ang), outcome: pr.outcome, part: f.part });
+      const outcome = hullCovered && f.part === 'hull' ? 'cover' : judgeEdge(target, shell, e, f.part, cosH, d).outcome;
+      out.push({ a, b, n: dirToWorld(e.n, f.ang), outcome, part: f.part });
     }
   }
   return out;
 }
 
-const RANK: Record<Prediction['outcome'], number> = { pen: 3, maybe: 2, no: 1, ricochet: 0, none: -1 };
+const RANK: Record<Prediction['outcome'], number> = { pen: 3, maybe: 2, no: 1, ricochet: 0, cover: -0.5, none: -1 };
 
 /**
  * Deterministic prediction used for the aim reticle and AI weak-spot selection.
  * When the line crosses both hull and turret, the more likely hull result is reported
  * unless the turret result is worse (so a green reticle means both will penetrate).
  */
-export function predictShot(shooter: Tank, target: Tank, shell: ShellSpec, from: V2, dir: V2): Prediction {
+export function predictShot(shooter: Tank, target: Tank, shell: ShellSpec, from: V2, dir: V2, hullCovered = false): Prediction {
   void shooter;
-  const hull = predictPart(target, shell, from, dir, 'hull');
+  let hull = predictPart(target, shell, from, dir, 'hull');
   const tur = predictPart(target, shell, from, dir, 'turret');
+  if (hull && hullCovered) {
+    // hull-down: shells at hull height bury themselves in the earthwork
+    if (!tur) return { outcome: 'cover', eff: 0, pen: hull.pen, label: 'Hull-down' };
+    hull = null;
+  }
   if (!hull && !tur) return { outcome: 'none', eff: 0, pen: 0, label: '' };
   if (!hull) return tur!;
   if (!tur) return hull;

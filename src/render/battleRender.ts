@@ -3,7 +3,7 @@
 import { type V2, DEG, angDiff, clamp, dist, toWorld } from '../core/math';
 import { plateMap, predictShot, type Prediction } from '../game/armor';
 import type { Battle } from '../game/battle';
-import { shellObstacleHit } from '../game/map';
+import { bermCover, shellObstacleHit } from '../game/map';
 import type { Tank } from '../game/tank';
 import { drawCarrier, drawCrewWalk } from './carrierRender';
 import { MapRenderer } from './mapRender';
@@ -403,8 +403,8 @@ export class BattleRenderer {
     }
   }
 
-  private drawPlates(ctx: Ctx, t: Tank, shell: Tank['spec']['gun']['shells'][number], from: V2, alpha: number) {
-    const pv = plateMap(t, shell, from);
+  private drawPlates(ctx: Ctx, t: Tank, shell: Tank['spec']['gun']['shells'][number], from: V2, alpha: number, covered: boolean) {
+    const pv = plateMap(t, shell, from, covered);
     ctx.save();
     ctx.lineCap = 'round';
     ctx.globalAlpha = alpha;
@@ -412,11 +412,13 @@ export class BattleRenderer {
       const o = pl.part === 'turret' ? 0.14 : 0.26;
       ctx.strokeStyle = predColor(pl.outcome);
       ctx.lineWidth = pl.part === 'turret' ? 0.24 : 0.3;
+      ctx.setLineDash(pl.outcome === 'cover' ? [0.5, 0.5] : []);
       ctx.beginPath();
       ctx.moveTo(pl.a.x + pl.n.x * o, pl.a.y + pl.n.y * o);
       ctx.lineTo(pl.b.x + pl.n.x * o, pl.b.y + pl.n.y * o);
       ctx.stroke();
     }
+    ctx.setLineDash([]);
     ctx.restore();
   }
 
@@ -471,7 +473,7 @@ export class BattleRenderer {
       let tgtD = dist(m, end);
       for (const e of b.tanks) {
         if (!e.alive || e.team === p.team || !b.isSpotted(p.team, e)) continue;
-        const pr = predictShot(p, e, p.spec.gun.shells[p.shellIdx], m, d);
+        const pr = predictShot(p, e, p.spec.gun.shells[p.shellIdx], m, d, bermCover(b.map, m, e.pos));
         if (pr.outcome === 'none') continue;
         const de = dist(m, e.pos) - e.bp.radius * 0.5;
         if (de < tgtD) {
@@ -487,7 +489,7 @@ export class BattleRenderer {
       for (const e of b.tanks) {
         if (!e.alive || e.team === p.team || !b.isSpotted(p.team, e)) continue;
         if (e !== tgt && (this.zoomMul < 1.3 || dist(e.pos, this.cam) > (this.W / z) * 0.6)) continue;
-        this.drawPlates(ctx, e, shell, m, e === tgt ? 0.9 : 0.6);
+        this.drawPlates(ctx, e, shell, m, e === tgt ? 0.9 : 0.6, bermCover(b.map, m, e.pos));
       }
       ctx.setLineDash([1.2, 1.4]);
       ctx.strokeStyle = 'rgba(255,255,240,0.32)';
@@ -618,6 +620,8 @@ export function predColor(o: Prediction['outcome']): string {
     case 'no':
     case 'ricochet':
       return 'rgba(240,90,70,0.95)';
+    case 'cover':
+      return 'rgba(175,165,140,0.9)';
     default:
       return 'rgba(255,255,240,0.7)';
   }

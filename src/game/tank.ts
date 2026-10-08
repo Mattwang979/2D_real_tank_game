@@ -49,6 +49,8 @@ export class Tank {
   smokeCd = 0;
   /** crew-carrier cooldown */
   crewCd = 0;
+  /** ground speed factor (earthworks are slow going) */
+  terrainMul = 1;
   /** request from controls: launch smoke toward this world angle */
   wantSmoke: number | null = null;
   /** queued shot: fires as soon as the gun is loaded and on the aim angle (until `until`) */
@@ -201,7 +203,7 @@ export class Tank {
     const pw = sp.hp / sp.weight;
     const boosting = this.boostT > 0;
     const accel = clamp(0.19 * pw, 0.9, 3.4) * this.enginePower() * (boosting ? 1.8 : 1);
-    const vmax = this.maxSpeed() * (this.enginePower() < 1 ? 0.6 : 1) * (boosting ? 1.3 : 1);
+    const vmax = this.maxSpeed() * (this.enginePower() < 1 ? 0.6 : 1) * (boosting ? 1.3 : 1) * this.terrainMul;
     const vrev = (sp.reverse / 3.6) * SPEED_SCALE;
     let target = 0;
     if (mobile && !this.handbrake) target = this.throttle >= 0 ? this.throttle * vmax : this.throttle * vrev;
