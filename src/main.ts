@@ -113,6 +113,7 @@ async function startBattle() {
   const r = new BattleRenderer(canvas, b, s.settings.quality);
   const hd = new Hud(b, r, canvas);
   hd.onPause = () => openPause();
+  if (s.stats.battles < 3) hd.tutorial = 14;
   hd.onLeave = () => leaveBattle();
   battle = b;
   renderer = r;

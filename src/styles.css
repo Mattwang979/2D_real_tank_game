@@ -391,7 +391,13 @@ button {
 }
 .lineup-bar .label {
   writing-mode: vertical-rl;
-  transform: rotate(180deg);
+  letter-spacing: 0.1em;
+}
+.stat-group h4 em {
+  font-style: normal;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  color: var(--dim);
 }
 .slot {
   position: relative;

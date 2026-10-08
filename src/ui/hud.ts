@@ -62,6 +62,8 @@ export class Hud {
   onLeave: () => void = () => {};
   safe = { l: 0, r: 0, t: 0, b: 0 };
   private minimapBg: HTMLCanvasElement | null = null;
+  /** seconds left for the first-battle controls hint */
+  tutorial = 0;
   private fireFlash = 0;
 
   constructor(b: Battle, r: BattleRenderer, canvas: HTMLCanvasElement) {
@@ -114,7 +116,7 @@ export class Hud {
       const cw = 150;
       const total = av.length * (cw + 12) - 12;
       av.forEach((v, i) => btns.push({ id: `spawn:${v.id}`, x: W / 2 - total / 2 + i * (cw + 12), y: H - s.b - 120, w: cw, h: 96 }));
-      btns.push({ id: 'leave', x: W / 2 - 70, y: H - s.b - 16 - 34 - (av.length ? 0 : 60), w: 140, h: 30 });
+      btns.push({ id: 'leave', x: W - s.r - 150, y: H - s.b - 44, w: 136, h: 30 });
     }
     this.buttons = btns;
   }
@@ -239,6 +241,7 @@ export class Hud {
     this.hitcams = this.hitcams.filter((h) => h.t < h.life);
     this.fireFlash = Math.max(0, this.fireFlash - dt);
     if (this.deathInfo) this.deathInfo.t += dt;
+    if (this.tutorial > 0) this.tutorial -= dt;
 
     if (!p || !p.alive) {
       this.move = null;
@@ -364,7 +367,8 @@ export class Hud {
       case 'playerDead': {
         let entry: HitCamEntry | null = null;
         if (ev.res && b.player) {
-          const { title, color } = hitTitle(ev.res, true);
+          const title = ev.res.cookoff ? 'COOK-OFF' : tr('KNOCKED OUT');
+          const color = '#e8473b';
           entry = { res: ev.res, target: b.player, shooter: ev.killer ?? b.player, t: 1.0, life: 9999, title, color };
         }
         this.deathInfo = { killer: ev.killer, res: entry, t: 0 };
@@ -406,6 +410,7 @@ export class Hud {
       for (const bt of this.buttons) if (bt.id === 'pause' || bt.id === 'zoom') this.drawRoundBtn(ctx, bt, bt.id === 'pause' ? 'II' : '⌕', false);
     }
     if (b.state === 'dead') this.drawDeath(ctx, W, H, s);
+    if (this.tutorial > 0 && b.state === 'playing') this.drawTutorial(ctx, W, H);
     ctx.restore();
   }
 
@@ -630,7 +635,7 @@ export class Hud {
     if (p.burning > 0) {
       ctx.fillStyle = '#ff7b4a';
       ctx.font = '700 10px "Barlow Condensed", sans-serif';
-      ctx.fillText(tr('FIRE'), x + w * 0.7, yy);
+      ctx.fillText(tr('BURNING'), x + w * 0.7, yy);
       yy += 13;
     }
     const rep = p.mods.find((m) => m.repair > 0);
@@ -827,6 +832,33 @@ export class Hud {
       } else if (bt.id === 'pause') this.drawRoundBtn(ctx, bt, 'II', false);
       else if (bt.id === 'zoom') this.drawRoundBtn(ctx, bt, this.r.zoomOut ? '−' : '⌕', this.r.zoomOut);
     }
+  }
+
+  private drawTutorial(ctx: Ctx, W: number, H: number) {
+    const a = Math.min(1, this.tutorial / 0.6, (14 - this.tutorial) / 0.4);
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, a);
+    const box = (x: number, y: number, title: string, sub: string) => {
+      ctx.font = '700 16px "Barlow Condensed", sans-serif';
+      const w = Math.max(ctx.measureText(title).width, (ctx.font = '500 12px "Barlow Condensed", sans-serif', ctx.measureText(sub).width)) + 24;
+      ctx.fillStyle = 'rgba(12,14,12,0.72)';
+      roundRect(ctx, x - w / 2, y - 22, w, 44, 6);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(240,180,90,0.7)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#f2b449';
+      ctx.font = '700 16px "Barlow Condensed", sans-serif';
+      ctx.fillText(title, x, y - 7);
+      ctx.fillStyle = '#e6e6dc';
+      ctx.font = '500 12px "Barlow Condensed", sans-serif';
+      ctx.fillText(sub, x, y + 11);
+    };
+    box(W * 0.22, H * 0.62, tr('◀ DRAG TO DRIVE'), tr('Push where you want to go · pull back to reverse'));
+    box(W * 0.66, H * 0.42, tr('DRAG TO AIM ▶'), tr('Release to fire · tap to fire'));
+    box(W * 0.45, H * 0.74, tr('Capture point A'), tr('Green reticle = will penetrate'));
+    ctx.restore();
   }
 
   private drawDeath(ctx: Ctx, W: number, H: number, s: typeof this.safe) {

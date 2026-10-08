@@ -112,6 +112,13 @@ export class BattleRenderer {
       const k = 1 - Math.exp(-dt * 3.5);
       this.cam.x += (tx - this.cam.x) * k;
       this.cam.y += (ty - this.cam.y) * k;
+      // keep the view mostly inside the map
+      const S = b.map.size;
+      const hw = this.W / this.zoom / 2;
+      const hh = this.H / this.zoom / 2;
+      const m = 12;
+      this.cam.x = hw * 2 > S ? S / 2 : Math.min(Math.max(this.cam.x, hw - m), S - hw + m);
+      this.cam.y = hh * 2 > S ? S / 2 : Math.min(Math.max(this.cam.y, hh - m), S - hh + m);
     }
     this.shake = Math.max(0, this.shake - dt * 3);
     const sx = (Math.random() - 0.5) * this.shake * 0.6;
@@ -137,6 +144,18 @@ export class BattleRenderer {
     this.mapR.drawTreeShadows(ctx, x0, y0, x1, y1);
 
     const visible = b.tanks.filter((t) => this.tankVisible(t) && t.pos.x > x0 - 10 && t.pos.x < x1 + 10 && t.pos.y > y0 - 10 && t.pos.y < y1 + 10);
+    // subtle ground ring marking the player's own tank
+    if (b.player && b.player.alive) {
+      const p = b.player;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,240,200,0.28)';
+      ctx.lineWidth = 0.22;
+      ctx.setLineDash([1.1, 0.8]);
+      ctx.beginPath();
+      ctx.arc(p.pos.x, p.pos.y, p.bp.radius + 1.1, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
     for (const t of visible) this.drawTankShadow(ctx, t);
     // wrecks first, then live tanks
     for (const t of visible) if (!t.alive) this.drawTank(ctx, t);

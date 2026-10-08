@@ -1,0 +1,17 @@
+import { chromium } from '/opt/npm-tools/node_modules/playwright/index.mjs';
+const [out] = process.argv.slice(2);
+const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' });
+const ctx = await browser.newContext({ viewport: { width: 844, height: 390 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true, locale: 'zh-TW' });
+const page = await ctx.newPage();
+page.on('pageerror', (e) => console.log('[pageerror]', e.message));
+await page.goto('http://localhost:5173/');
+await page.waitForTimeout(800);
+await page.mouse.click(400, 200);
+await page.waitForTimeout(700);
+await page.screenshot({ path: `${out}/zh_hangar.png` });
+await page.evaluate(() => window.__pen.show('tree'));
+await page.waitForTimeout(500);
+await page.mouse.click(620, 260);
+await page.waitForTimeout(600);
+await page.screenshot({ path: `${out}/zh_tree_detail.png` });
+await browser.close();

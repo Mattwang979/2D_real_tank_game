@@ -152,7 +152,7 @@ export class Battle {
 
   addReward(label: string, rp: number, cr: number, at?: V2, color = '#f0b43c', big = false) {
     this.rewards.push({ label, rp, cr });
-    if (at) this.emit({ type: 'popup', text: `${label} +${rp} RP`, x: at.x, y: at.y, color, big });
+    if (at) this.emit({ type: 'popup', text: big ? `${label} +${rp} RP +${cr.toLocaleString('en-US')} CR` : `${label} +${rp} RP`, x: at.x, y: at.y, color, big });
   }
 
   // ------------------------------------------------------------------ player API

@@ -92,7 +92,7 @@ export class Hangar {
       h(
         'div',
         { class: 'stat-group' },
-        h('h4', {}, `${t('Firepower')} · ${v.gun.name}`),
+        h('h4', {}, `${t('Firepower')} · `, h('em', {}, v.gun.name)),
         h('div', { class: 'stat' }, h('span', {}, t('Penetration')), h('b', {}, `${st.pen} mm`)),
         h('div', { class: 'stat' }, h('span', {}, t('Reload')), h('b', {}, `${st.reload.toFixed(1)} s`)),
       ),

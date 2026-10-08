@@ -26,6 +26,7 @@ const ZH: Record<string, string> = {
   'Point A neutralized': 'A 點已中立',
   CONTESTED: '爭奪中',
   FIRE: '開火',
+  BURNING: '起火中',
   DESTROYED: '已被擊毀',
   by: '擊毀者',
   'TAP TO DEPLOY': '點擊出擊',
@@ -127,6 +128,13 @@ const ZH: Record<string, string> = {
   'Are you sure?': '確定嗎？',
   'Loading': '載入中',
   'Deploy': '出擊',
+  'KNOCKED OUT': '已被擊毀',
+  '◀ DRAG TO DRIVE': '◀ 拖曳移動',
+  'Push where you want to go · pull back to reverse': '往要去的方向推 · 往後拉倒車',
+  'DRAG TO AIM ▶': '拖曳瞄準 ▶',
+  'Release to fire · tap to fire': '放開開火 · 點一下也能開火',
+  'Capture point A': '佔領 A 點',
+  'Green reticle = will penetrate': '準星綠色＝打得穿',
 };
 
 export function t(s: string): string {

@@ -27,12 +27,14 @@ export class AIController {
   holdUntil = 0;
   extinguishAt = -1;
   lastPos: V2;
+  /** time when the AI may fire at its current target (reaction delay) */
+  fireAfter = 0;
 
   constructor(tank: Tank, b: Battle, role: Role) {
     this.tank = tank;
     this.b = b;
     this.role = role;
-    this.skill = rand.range(0.45, 0.85);
+    this.skill = rand.range(0.35, 0.8);
     this.lastPos = { ...tank.pos };
     this.repath = rand.range(0, 1);
   }
@@ -86,9 +88,9 @@ export class AIController {
     if (best !== this.target) {
       this.target = best;
       this.aimErr = rand.gauss() * (1.4 - this.skill) * 2.2 * DEG;
+      this.fireAfter = now + rand.range(0.7, 1.6) * (1.3 - this.skill);
       if (best) this.chooseAimPoint(best);
     }
-    void now;
   }
 
   /** Pick the weakest-looking spot on the target using the penetration predictor. */
@@ -189,7 +191,7 @@ export class AIController {
         engaging = true;
         const err = t.aimError();
         const ready = t.isReloaded() && t.canFire();
-        if (ready && err < Math.max(0.5 * DEG, t.dispersion() * 1.4) && !this.friendlyInLine(e)) {
+        if (ready && now >= this.fireAfter && err < Math.max(0.5 * DEG, t.dispersion() * 1.4) && !this.friendlyInLine(e)) {
           t.wantFire = true;
           this.aimErr = rand.gauss() * (1.3 - this.skill) * 1.6 * DEG;
         }

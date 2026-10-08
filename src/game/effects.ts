@@ -63,6 +63,7 @@ export class Effects {
       smoke: puff([120, 118, 112], 0.5),
       dark: puff([38, 36, 34], 0.5),
       fire: puff([255, 150, 50], 0.35),
+      flame: puff([232, 96, 28], 0.4),
       flash: puff([255, 236, 180], 0.25),
     };
   }
@@ -255,19 +256,24 @@ export class Effects {
         case 'dark': {
           const fadeIn = Math.min(1, (1 - t) * 6);
           ctx.globalAlpha = p.alpha * t * fadeIn;
-          const tex = this.tex[p.kind];
-          ctx.save();
-          ctx.translate(p.x, p.y);
-          ctx.rotate(p.rot);
-          ctx.drawImage(tex, -r, -r, r * 2, r * 2);
-          ctx.restore();
+          ctx.drawImage(this.tex[p.kind], p.x - r, p.y - r, r * 2, r * 2);
           break;
         }
-        case 'fire':
+        case 'fire': {
+          // flame body with normal blending (stays orange on bright sand), small additive core
+          ctx.globalAlpha = Math.min(1, t * 1.6) * 0.85;
+          ctx.drawImage(this.tex.flame, p.x - r, p.y - r, r * 2, r * 2);
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.globalAlpha = Math.min(1, t * 1.5) * 0.35;
+          const rc = r * 0.55;
+          ctx.drawImage(this.tex.fire, p.x - rc, p.y - rc, rc * 2, rc * 2);
+          ctx.globalCompositeOperation = 'source-over';
+          break;
+        }
         case 'flash': {
           ctx.globalCompositeOperation = 'lighter';
-          ctx.globalAlpha = p.kind === 'flash' ? t * 0.9 : Math.min(1, t * 1.5) * 0.9;
-          ctx.drawImage(this.tex[p.kind], p.x - r, p.y - r, r * 2, r * 2);
+          ctx.globalAlpha = t * (this.theme === 'desert' ? 0.6 : 0.85);
+          ctx.drawImage(this.tex.flash, p.x - r, p.y - r, r * 2, r * 2);
           ctx.globalCompositeOperation = 'source-over';
           break;
         }
