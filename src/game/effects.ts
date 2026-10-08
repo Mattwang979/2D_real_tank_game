@@ -64,6 +64,7 @@ export class Effects {
       dark: puff([38, 36, 34], 0.5),
       fire: puff([255, 150, 50], 0.35),
       flame: puff([232, 96, 28], 0.4),
+      white: puff([214, 214, 206], 0.6),
       flash: puff([255, 236, 180], 0.25),
     };
   }
@@ -219,6 +220,27 @@ export class Effects {
       high: true,
       drag: 0.2,
     });
+  }
+
+  /** Thick smoke-screen clouds. */
+  drawSmokeClouds(ctx: Ctx, clouds: Array<{ id: number; x: number; y: number; r: number; age: number; life: number }>, x0: number, y0: number, x1: number, y1: number) {
+    for (const c of clouds) {
+      if (c.x + c.r * 1.6 < x0 || c.x - c.r * 1.6 > x1 || c.y + c.r * 1.6 < y0 || c.y - c.r * 1.6 > y1) continue;
+      const fade = Math.min(1, c.age / 0.5) * Math.min(1, (c.life - c.age) / 4);
+      const n = 10;
+      for (let i = 0; i < n; i++) {
+        const h = Math.sin(c.id * 12.9898 + i * 78.233) * 43758.5453;
+        const f = h - Math.floor(h);
+        const a = (i / n) * Math.PI * 2 + c.age * 0.06 * (i % 2 ? 1 : -1) + f;
+        const d = c.r * (0.15 + 0.5 * f);
+        const sz = c.r * (0.6 + 0.35 * ((f * 7) % 1));
+        const x = c.x + Math.cos(a) * d + this.wind.x * c.age * 0.25;
+        const y = c.y + Math.sin(a) * d + this.wind.y * c.age * 0.25;
+        ctx.globalAlpha = 0.62 * fade;
+        ctx.drawImage(this.tex.white, x - sz, y - sz, sz * 2, sz * 2);
+      }
+    }
+    ctx.globalAlpha = 1;
   }
 
   update(dt: number) {

@@ -34,7 +34,7 @@ const btn = await page.evaluate(() => window.__pen.hud.buttons.find(b => b.id.st
 console.log('spawn button', JSON.stringify(btn));
 if (btn) { await page.mouse.click(btn.x + btn.w / 2, btn.y + btn.h / 2); await page.waitForTimeout(800); console.log('respawned as', await page.evaluate(() => window.__pen.battle.player.spec.id + ' alive=' + window.__pen.battle.player.alive)); }
 await page.screenshot({ path: `${out}/respawn_${lang}.png` });
-await page.evaluate(() => { const b = window.__pen.battle; b.addReward('Target destroyed', 300, 1500); b.stats.kills = 1; b.end('victory'); });
+await page.evaluate(() => { const b = window.__pen.battle; b.addReward(b.local, 'Target destroyed', 300, 1500); b.stats.kills = 1; b.end('victory'); });
 await page.waitForTimeout(4200);
 await page.screenshot({ path: `${out}/results_${lang}.png` });
 await browser.close();

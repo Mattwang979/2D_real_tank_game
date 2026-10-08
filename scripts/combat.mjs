@@ -34,7 +34,7 @@ for (let k = 0; k < 40 && shot < +nshots; k++) {
     for (let i = 0; i < 180; i++) {
       hud.update(1 / 30); b.update(1 / 30);
       let hit = false;
-      for (const ev of b.events) { hud.handle(ev); if (ev.type === 'hit' && ev.shooter.isPlayer) hit = true; if (ev.type === 'playerDead') { const av = b.availableLineup(); b.deadAt = -10; if (av.length) b.respawnPlayer(av[0].id); } }
+      for (const ev of b.events) { hud.handle(ev); if (ev.type === 'hit' && ev.shooter.isPlayer) hit = true; if (ev.type === 'playerDead') { const av = b.availableLineup(); b.local.deadAt = -10; if (av.length) b.respawnPlayer(av[0].id); } }
       b.events.length = 0;
       if (hit) return 'hit';
       if (b.state === 'ended') return 'ended';

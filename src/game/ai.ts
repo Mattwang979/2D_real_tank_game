@@ -29,6 +29,8 @@ export class AIController {
   lastPos: V2;
   /** time when the AI may fire at its current target (reaction delay) */
   fireAfter = 0;
+  private repairAt = -1;
+  private smokeHandledHit = -1;
   /** optional detour waypoint taken before heading to the goal (flanking routes) */
   via: V2 | null = null;
   private usedVia = false;
@@ -60,7 +62,7 @@ export class AIController {
         const a = toSpawn + rand.range(-spread, spread);
         const r = this.role === 'flank' ? rand.range(60, 120) : rand.range(45, 100);
         const p = { x: cap.x + Math.cos(a) * r, y: cap.y + Math.sin(a) * r };
-        if (b.nav.free(p) && !losBlocked(b.map, p, cap)) {
+        if (b.nav!.free(p) && !losBlocked(b.map, p, cap)) {
           this.goal = p;
           break;
         }
@@ -77,7 +79,7 @@ export class AIController {
         const a = toSpawnA + side * rand.range(0.7, 1.15);
         const r = rand.range(75, 115);
         const p = { x: cap.x + Math.cos(a) * r, y: cap.y + Math.sin(a) * r };
-        if (p.x > 15 && p.y > 15 && p.x < b.map.size - 15 && p.y < b.map.size - 15 && b.nav.free(p)) {
+        if (p.x > 15 && p.y > 15 && p.x < b.map.size - 15 && p.y < b.map.size - 15 && b.nav!.free(p)) {
           this.via = p;
           break;
         }
@@ -85,7 +87,7 @@ export class AIController {
       this.usedVia = true;
     }
     const target = this.via ?? this.goal;
-    if (target) this.path = b.nav.findPath(t.pos, target) ?? [target];
+    if (target) this.path = b.nav!.findPath(t.pos, target) ?? [target];
   }
 
   private pickTarget(now: number) {
@@ -99,7 +101,7 @@ export class AIController {
       const d = dist(t.pos, e.pos);
       if (d > 420) continue;
       const los = !losBlocked(b.map, t.turretPos(), e.pos);
-      const score = d * (los ? 1 : 2.5) * (e === this.target ? 0.7 : 1) * (e.isPlayer ? 0.9 : 1);
+      const score = d * (los ? 1 : 2.5) * (e === this.target ? 0.7 : 1) * (e.slot ? 0.9 : 1);
       if (score < bestScore) {
         bestScore = score;
         best = e;
@@ -177,6 +179,25 @@ export class AIController {
       }
     }
 
+    // repairs
+    if (t.canRepair()) {
+      if (this.repairAt < 0) this.repairAt = now + rand.range(1, 2.5);
+      if (now >= this.repairAt) {
+        t.startRepair();
+        this.repairAt = -1;
+      }
+    } else this.repairAt = -1;
+    // smoke when badly hurt
+    const wall = performance.now() / 1000;
+    if (t.canSmoke() && wall - t.lastHitTime < 0.6 && this.smokeHandledHit !== t.lastHitTime) {
+      this.smokeHandledHit = t.lastHitTime;
+      const crippled = !t.canMove() || t.crewAlive().length < t.spec.crew.length || t.burning > 0;
+      if (crippled && rand.chance(0.55)) {
+        const src = t.lastHitBy?.pos ?? this.target?.pos;
+        if (src) t.wantSmoke = Math.atan2(src.y - t.pos.y, src.x - t.pos.x) + rand.range(-0.15, 0.15);
+      }
+    }
+
     this.retarget -= dt;
     if (this.retarget <= 0) {
       this.retarget = rand.range(0.4, 0.8);
@@ -187,7 +208,7 @@ export class AIController {
     if (this.repath <= 0 || !this.goal) {
       this.repath = rand.range(5, 9);
       if (this.via) {
-        this.path = b.nav.findPath(t.pos, this.via) ?? [this.via];
+        this.path = b.nav!.findPath(t.pos, this.via) ?? [this.via];
       } else this.chooseGoal();
     }
 
@@ -261,7 +282,7 @@ export class AIController {
     // follow path
     if (this.via && dist(t.pos, this.via) < 12) {
       this.via = null;
-      if (this.goal) this.path = b.nav.findPath(t.pos, this.goal) ?? [this.goal];
+      if (this.goal) this.path = b.nav!.findPath(t.pos, this.goal) ?? [this.goal];
     }
     while (this.path.length && dist(t.pos, this.path[0]) < 5) this.path.shift();
     const wp = this.path[0] ?? this.goal;
@@ -285,6 +306,8 @@ export class AIController {
     const ad = Math.abs(diff);
     t.throttle = ad > 1.6 ? 0.1 : ad > 0.8 ? 0.4 : 1;
     if (engaging) t.throttle *= 0.75;
+    // sprint on long, straight drives
+    if (!engaging && ad < 0.3 && this.goal && dist(t.pos, this.goal) > 110 && t.canBoost() && rand.chance(dt * 0.15)) t.startBoost();
 
     // stuck detection
     const moved = dist(t.pos, this.lastPos);

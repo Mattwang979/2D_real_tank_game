@@ -3,7 +3,7 @@
 
 import { type V2, angDiff, raySeg } from '../core/math';
 import type { GameMap } from './map';
-import { inFoliage, losBlocked } from './map';
+import { inFoliage, losBlocked, smokeRadius } from './map';
 import type { Tank } from './tank';
 
 export function visibilityPolygon(map: GameMap, o: V2, coneAng: number, half: number, range: number, near: number): V2[] {
@@ -23,6 +23,18 @@ export function visibilityPolygon(map: GameMap, o: V2, coneAng: number, half: nu
     const ab = Math.abs(angDiff(coneAng, Math.atan2(s.b.y - o.y, s.b.x - o.x)));
     const am = Math.abs(angDiff(coneAng, Math.atan2(my - o.y, mx - o.x)));
     if (Math.min(aa, ab, am) < half + 0.3) segs.push(s);
+  }
+  // smoke screens act as round occluders
+  for (const sm of map.smokes) {
+    const re = smokeRadius(sm);
+    if (re < 1.5) continue;
+    if (Math.hypot(sm.x - o.x, sm.y - o.y) > r2 + re) continue;
+    const n = 14;
+    for (let i = 0; i < n; i++) {
+      const a0 = (i / n) * Math.PI * 2;
+      const a1 = ((i + 1) / n) * Math.PI * 2;
+      segs.push({ a: { x: sm.x + Math.cos(a0) * re, y: sm.y + Math.sin(a0) * re }, b: { x: sm.x + Math.cos(a1) * re, y: sm.y + Math.sin(a1) * re } });
+    }
   }
   const angles: number[] = [];
   const inCone = (a: number) => Math.abs(angDiff(coneAng, a)) <= half;

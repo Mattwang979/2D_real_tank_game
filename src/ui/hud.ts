@@ -1,10 +1,16 @@
 // Battle HUD & touch controls (mobile landscape).
+//
+// Right thumb: the FIRE button is a joystick — drag it to swing the turret (the aim stays where
+// you leave it), release to fire, slide back into the centre to cancel. Around it sit the
+// handbrake (hold), boost, smoke (drag to throw, like the fire stick) and repair / extinguish.
+// Left thumb: floating drive stick. Zoom with the +/− buttons or a pinch; zoomed in, dragging on
+// the battlefield lays the gun exactly on the touched spot.
 
 import { type V2, DEG, angDiff, clamp, dist, formatNum } from '../core/math';
 import { audio } from '../core/audio';
 import type { Battle, BattleEvent } from '../game/battle';
-import { TICKETS } from '../game/battle';
-import type { Tank } from '../game/tank';
+import { BATTLE_TIME, TICKETS } from '../game/battle';
+import { Tank } from '../game/tank';
 import { TEAM_COL, predColor, type BattleRenderer } from '../render/battleRender';
 import { drawXray, drawTankSprite, makeCanvas } from '../render/tankRender';
 import { t as tr } from './i18n';
@@ -12,12 +18,58 @@ import { drawHitCam, hitTitle, roundRect, type HitCamEntry } from './hitcam';
 
 type Ctx = CanvasRenderingContext2D;
 
+/** Discrete player actions. Single player / host apply them directly; a network client sends them. */
+export interface Controls {
+  fire(aim: number): void;
+  cancelFire(): void;
+  shell(i: number): void;
+  smoke(ang: number): void;
+  boost(): void;
+  repair(): void;
+  respawn(id: string): void;
+}
+
+export function localControls(b: Battle): Controls {
+  const me = () => b.player;
+  return {
+    fire: (aim) => {
+      const p = me();
+      if (p) b.requestFire(p, aim);
+    },
+    cancelFire: () => {
+      const p = me();
+      if (p) p.fireReq = null;
+    },
+    shell: (i) => {
+      const p = me();
+      if (p) b.selectShell(p, i);
+    },
+    smoke: (a) => {
+      const p = me();
+      if (p) b.useSmoke(p, a);
+    },
+    boost: () => {
+      const p = me();
+      if (p) b.useBoost(p);
+    },
+    repair: () => {
+      const p = me();
+      if (p) b.useRepair(p);
+    },
+    respawn: (id) => b.respawnPlayer(id),
+  };
+}
+
 interface Stick {
   id: number;
   base: V2;
   pos: V2;
   start: number;
+  /** has left the centre dead zone at least once */
   moved: boolean;
+  /** filtered world angle of the stick */
+  ang: number;
+  hist: Array<{ t: number; a: number }>;
 }
 
 interface Btn {
@@ -41,25 +93,37 @@ interface Notice {
   t: number;
 }
 
+const ABILITY_IDS = ['brake', 'boost', 'smoke', 'repair'] as const;
+
 export class Hud {
   b: Battle;
   r: BattleRenderer;
   canvas: HTMLCanvasElement;
+  controls: Controls;
   move: Stick | null = null;
-  aim: Stick | null = null;
+  fireStick: Stick | null = null;
+  smokeStick: Stick | null = null;
+  /** zoomed in: finger on the battlefield lays the gun on that spot */
+  sight: { id: number; pos: V2 } | null = null;
+  private free = new Map<number, V2>();
+  private pinch: { d0: number; idx0: number } | null = null;
+  brakeHeld = false;
   buttons: Btn[] = [];
+  fireC = { x: 0, y: 0, r: 40 };
+  private arcTop = 0;
   private pressed = new Map<number, string>();
   feed: Feed[] = [];
   notices: Notice[] = [];
   hitcams: HitCamEntry[] = [];
   reverseMode = false;
-  trackTarget: Tank | null = null;
   aimAssistTarget: Tank | null = null;
   deathInfo: { killer: Tank | null; res: HitCamEntry | null; t: number } | null = null;
   /** test hook: when set, replaces touch movement input */
   autoInput: ((p: Tank) => void) | null = null;
   onPause: () => void = () => {};
   onLeave: () => void = () => {};
+  /** multiplayer status line (ping etc.) */
+  netInfo: string | null = null;
   safe = { l: 0, r: 0, t: 0, b: 0 };
   private minimapBg: HTMLCanvasElement | null = null;
   /** seconds left for the first-battle controls hint */
@@ -67,11 +131,14 @@ export class Hud {
   /** incoming fire direction markers */
   private incoming: Array<{ ang: number; t: number; pen: boolean }> = [];
   private fireFlash = 0;
+  private prevRepairT = 0;
+  private prevRecoil = 0;
 
-  constructor(b: Battle, r: BattleRenderer, canvas: HTMLCanvasElement) {
+  constructor(b: Battle, r: BattleRenderer, canvas: HTMLCanvasElement, controls?: Controls) {
     this.b = b;
     this.r = r;
     this.canvas = canvas;
+    this.controls = controls ?? localControls(b);
     canvas.addEventListener('pointerdown', this.onDown);
     canvas.addEventListener('pointermove', this.onMove);
     canvas.addEventListener('pointerup', this.onUp);
@@ -84,6 +151,7 @@ export class Hud {
     this.canvas.removeEventListener('pointermove', this.onMove);
     this.canvas.removeEventListener('pointerup', this.onUp);
     this.canvas.removeEventListener('pointercancel', this.onUp);
+    this.r.camLock = null;
   }
 
   readSafe() {
@@ -97,22 +165,33 @@ export class Hud {
     const W = this.r.W;
     const H = this.r.H;
     const s = this.safe;
-    const fr = clamp(H * 0.115, 34, 46);
-    const fx = W - s.r - fr - 18;
-    const fy = H - s.b - fr - 16;
-    const btns: Btn[] = [{ id: 'fire', x: fx, y: fy, r: fr }];
+    const fr = clamp(H * 0.13, 40, 54);
+    const fx = W - s.r - fr - 20;
+    const fy = H - s.b - fr - 18;
+    this.fireC = { x: fx, y: fy, r: fr };
+    const btns: Btn[] = [];
     const p = this.b.player;
-    if (p && p.alive) {
+    this.arcTop = fy - fr - 10;
+    if (p && p.alive && this.b.state === 'playing') {
+      // ability buttons on an arc around the fire stick (left → up)
+      const br = clamp(H * 0.062, 21, 26);
+      const ar = fr + br + 13;
+      const angs = [180, 214, 248, 282];
+      ABILITY_IDS.forEach((id, i) => {
+        const a = angs[i] * DEG;
+        btns.push({ id, x: fx + Math.cos(a) * ar, y: fy + Math.sin(a) * ar, r: br });
+      });
+      this.arcTop = fy - ar - br - 6;
+      // ammo row to the left of the arc
       const n = p.spec.gun.shells.length;
       const bw = 54;
       const bh = 30;
-      for (let i = 0; i < n; i++) {
-        btns.push({ id: `ammo${i}`, x: fx - fr - 8 - (n - i) * (bw + 6) + 6, y: fy + fr - bh, w: bw, h: bh });
-      }
-      if (p.burning > 0) btns.push({ id: 'ext', x: fx - fr * 0.2, y: fy - fr - 44, r: 24 });
+      const right = fx - ar - br - 10;
+      for (let i = 0; i < n; i++) btns.push({ id: `ammo${i}`, x: right - (n - i) * (bw + 6) + 6, y: fy + fr - bh, w: bw, h: bh });
     }
     btns.push({ id: 'pause', x: W - s.r - 30, y: s.t + 26, r: 18 });
-    btns.push({ id: 'zoom', x: W - s.r - 74, y: s.t + 26, r: 18 });
+    btns.push({ id: 'zin', x: W - s.r - 72, y: s.t + 26, r: 18 });
+    btns.push({ id: 'zout', x: W - s.r - 112, y: s.t + 26, r: 18 });
     if (this.b.state === 'dead') {
       const av = this.b.availableLineup();
       const cw = 150;
@@ -126,10 +205,14 @@ export class Hud {
   private hitButton(x: number, y: number): Btn | null {
     for (const b of this.buttons) {
       if (b.r !== undefined) {
-        if (Math.hypot(x - b.x, y - b.y) <= b.r + 8) return b;
+        if (Math.hypot(x - b.x, y - b.y) <= b.r + 5) return b;
       } else if (x >= b.x - 4 && x <= b.x + b.w! + 4 && y >= b.y - 4 && y <= b.y + b.h! + 4) return b;
     }
     return null;
+  }
+
+  private playing(): boolean {
+    return this.b.state === 'playing' && !!this.b.player?.alive;
   }
 
   // ------------------------------------------------------------------ input
@@ -138,100 +221,249 @@ export class Hud {
     return { x: e.clientX - rc.left, y: e.clientY - rc.top };
   }
 
-  private onDown = (e: PointerEvent) => {
-    e.preventDefault();
-    audio.unlock();
-    this.pressed.delete(e.pointerId);
-    if (this.move?.id === e.pointerId) this.move = null;
-    if (this.aim?.id === e.pointerId) this.aim = null;
-    const p = this.pt(e);
-    this.layout();
-    const btn = this.hitButton(p.x, p.y);
-    if (btn) {
-      this.pressed.set(e.pointerId, btn.id);
-      this.press(btn.id);
-      return;
-    }
-    if (this.b.state !== 'playing' || !this.b.player?.alive) return;
-    const W = this.r.W;
-    if (p.x < W * 0.45 && !this.move) {
-      const R = this.stickR();
-      const base = { x: clamp(p.x, R + 8 + this.safe.l, W * 0.45), y: clamp(p.y, R + 60, this.r.H - R - 8) };
-      this.move = { id: e.pointerId, base, pos: p, start: performance.now(), moved: false };
-    } else if (p.x >= W * 0.45 && !this.aim) {
-      this.aim = { id: e.pointerId, base: p, pos: p, start: performance.now(), moved: false };
-    }
+  private newStick(e: PointerEvent, base: V2, p: V2): Stick {
+    return { id: e.pointerId, base, pos: p, start: performance.now(), moved: false, ang: 0, hist: [] };
+  }
+
+  private capture(e: PointerEvent) {
     try {
       this.canvas.setPointerCapture(e.pointerId);
     } catch {
       /* ignore */
     }
+  }
+
+  private onDown = (e: PointerEvent) => {
+    e.preventDefault();
+    audio.unlock();
+    // a reused pointer id means we missed its pointerup; drop stale state
+    this.pressed.delete(e.pointerId);
+    this.free.delete(e.pointerId);
+    if (this.move?.id === e.pointerId) this.move = null;
+    if (this.fireStick?.id === e.pointerId) this.fireStick = null;
+    if (this.smokeStick?.id === e.pointerId) this.smokeStick = null;
+    if (this.sight?.id === e.pointerId) this.endSight();
+    const p = this.pt(e);
+    this.layout();
+    const btn = this.hitButton(p.x, p.y);
+    if (btn) {
+      if (btn.id === 'smoke' && this.playing()) {
+        if (!this.smokeStick) {
+          this.smokeStick = this.newStick(e, { x: btn.x, y: btn.y }, p);
+          this.capture(e);
+        }
+        return;
+      }
+      this.pressed.set(e.pointerId, btn.id);
+      this.press(btn.id);
+      this.capture(e);
+      return;
+    }
+    if (!this.playing()) return;
+    const W = this.r.W;
+    const fc = this.fireC;
+    if (Math.hypot(p.x - fc.x, p.y - fc.y) <= fc.r + 10) {
+      if (!this.fireStick) {
+        this.fireStick = this.newStick(e, { x: fc.x, y: fc.y }, p);
+        this.capture(e);
+      }
+      return;
+    }
+    if (p.x < W * 0.45 && !this.move) {
+      const R = this.stickR();
+      const base = { x: clamp(p.x, R + 8 + this.safe.l, W * 0.45), y: clamp(p.y, R + 60, this.r.H - R - 8) };
+      this.move = this.newStick(e, base, p);
+      this.capture(e);
+      return;
+    }
+    if (p.x >= W * 0.45) {
+      // free touch on the battlefield: pinch zoom, or precision aim when zoomed in
+      this.free.set(e.pointerId, p);
+      this.capture(e);
+      if (this.free.size >= 2) {
+        this.endSight();
+        const [a, b] = [...this.free.values()];
+        this.pinch = { d0: Math.max(30, dist(a, b)), idx0: this.r.zoomIdx };
+      } else if (this.r.zoomMul > 1.05 && !this.sight) {
+        this.sight = { id: e.pointerId, pos: p };
+        this.r.camLock = { ...this.r.cam };
+      }
+    }
   };
+
+  private endSight() {
+    this.sight = null;
+    this.r.camLock = null;
+  }
+
+  private stickMove(st: Stick, p: V2, dz: number) {
+    st.pos = p;
+    const vx = p.x - st.base.x;
+    const vy = p.y - st.base.y;
+    if (Math.hypot(vx, vy) < dz) return;
+    const raw = Math.atan2(vy, vx);
+    if (!st.moved) {
+      st.moved = true;
+      st.ang = raw;
+    } else {
+      // calm small finger jitter, follow big swings at once
+      const d = angDiff(st.ang, raw);
+      st.ang += Math.abs(d) > 0.06 ? d : d * 0.4;
+    }
+    const now = performance.now();
+    st.hist.push({ t: now, a: st.ang });
+    while (st.hist.length > 2 && now - st.hist[0].t > 400) st.hist.shift();
+  }
 
   private onMove = (e: PointerEvent) => {
     const p = this.pt(e);
     if (this.move && e.pointerId === this.move.id) {
       this.move.pos = p;
       if (dist(p, this.move.base) > 6) this.move.moved = true;
-    } else if (this.aim && e.pointerId === this.aim.id) {
-      this.aim.pos = p;
-      if (dist(p, this.aim.base) > 14) {
-        this.aim.moved = true;
-        this.trackTarget = null;
+    } else if (this.fireStick && e.pointerId === this.fireStick.id) {
+      const was = this.fireStick.moved;
+      this.stickMove(this.fireStick, p, this.fireDZ());
+      if (!was && this.fireStick.moved && this.b.player?.fireReq) this.controls.cancelFire();
+    } else if (this.smokeStick && e.pointerId === this.smokeStick.id) {
+      this.stickMove(this.smokeStick, p, 16);
+    } else if (this.free.has(e.pointerId)) {
+      this.free.set(e.pointerId, p);
+      if (this.sight && this.sight.id === e.pointerId) this.sight.pos = p;
+      if (this.pinch && this.free.size >= 2) {
+        const [a, b] = [...this.free.values()];
+        const steps = Math.round(Math.log(dist(a, b) / this.pinch.d0) / Math.log(1.45));
+        const want = clamp(this.pinch.idx0 + steps, 0, 3);
+        if (want !== this.r.zoomIdx) this.r.zoomStep(want - this.r.zoomIdx);
       }
     }
   };
 
   private onUp = (e: PointerEvent) => {
-    if (this.pressed.has(e.pointerId)) {
+    const id = this.pressed.get(e.pointerId);
+    if (id !== undefined) {
       this.pressed.delete(e.pointerId);
+      if (id === 'brake') this.brakeHeld = false;
       return;
     }
     if (this.move && e.pointerId === this.move.id) {
       this.move = null;
-    } else if (this.aim && e.pointerId === this.aim.id) {
-      const a = this.aim;
-      this.aim = null;
-      const quick = performance.now() - a.start < 260 && !a.moved;
-      const d = dist(a.pos, a.base);
-      if (quick) this.fire();
-      else if (a.moved && d > this.stickR() * 0.3) {
-        this.trackTarget = this.aimAssistTarget;
-        this.fire();
-      }
+    } else if (this.fireStick && e.pointerId === this.fireStick.id) {
+      const st = this.fireStick;
+      this.fireStick = null;
+      this.releaseFire(st);
+    } else if (this.smokeStick && e.pointerId === this.smokeStick.id) {
+      const st = this.smokeStick;
+      this.smokeStick = null;
+      this.releaseSmoke(st);
+    } else if (this.free.has(e.pointerId)) {
+      this.free.delete(e.pointerId);
+      if (this.sight?.id === e.pointerId) this.endSight();
+      if (this.free.size < 2) this.pinch = null;
     }
   };
+
+  /** Angle the stick pointed at a moment before release (fingers twitch as they lift). */
+  private settledAngle(st: Stick): number {
+    const now = performance.now();
+    let a = st.ang;
+    for (let i = st.hist.length - 1; i >= 0; i--) {
+      a = st.hist[i].a;
+      if (now - st.hist[i].t >= 60) break;
+    }
+    return a;
+  }
+
+  private releaseFire(st: Stick) {
+    const p = this.b.player;
+    if (!p || !p.alive || this.b.state !== 'playing') return;
+    const inside = dist(st.pos, st.base) < this.fireDZ();
+    if (st.moved && inside) {
+      this.note(tr('Shot cancelled'), '#c8c8c0');
+      return;
+    }
+    let aim = p.aimAngle;
+    if (st.moved) {
+      aim = this.assist(p, this.settledAngle(st));
+      p.aimAngle = aim;
+    }
+    if (!p.canFire()) {
+      this.note(tr('Gun out of action'), '#ff8a5c');
+      return;
+    }
+    if (p.reloadLeft > 1.6) {
+      this.note(`${tr('Reloading')} ${p.reloadLeft.toFixed(1)}s`, '#d8d0b8');
+      return;
+    }
+    this.controls.fire(aim);
+    // network client: show the queued state until the host's shot arrives
+    if (this.b.mode === 'replica' && !p.fireReq) p.fireReq = { until: this.b.time + p.reloadLeft + 3 };
+  }
+
+  private releaseSmoke(st: Stick) {
+    const p = this.b.player;
+    if (!p || !p.alive || this.b.state !== 'playing') return;
+    const inside = dist(st.pos, st.base) < 16;
+    if (st.moved && inside) return;
+    if (p.smokeCharges <= 0) {
+      this.note(tr('No smoke left'), '#c8c8c0');
+      return;
+    }
+    if (!p.canSmoke()) return;
+    const a = st.moved ? this.settledAngle(st) : p.gunWorldAng;
+    this.controls.smoke(a);
+    audio.click();
+  }
+
+  private note(text: string, color = '#ffd27a') {
+    if (this.notices[0]?.text === text && this.notices[0].t < 1) {
+      this.notices[0].t = 0;
+      return;
+    }
+    this.notices.unshift({ text, color, t: 0 });
+    this.notices = this.notices.slice(0, 3);
+  }
 
   private press(id: string) {
     const b = this.b;
     const p = b.player;
     audio.click();
-    if (id === 'fire') this.fire();
-    else if (id.startsWith('ammo') && p) p.selectShell(parseInt(id.slice(4), 10));
-    else if (id === 'ext' && p) b.extinguish(p);
-    else if (id === 'zoom') this.r.zoomOut = !this.r.zoomOut;
-    else if (id === 'pause') this.onPause();
+    if (id.startsWith('ammo') && p) this.controls.shell(parseInt(id.slice(4), 10));
+    else if (id === 'brake') this.brakeHeld = true;
+    else if (id === 'boost' && p) {
+      if (p.boostT > 0) return;
+      if (!p.canMove()) this.note(tr('Cannot move'), '#ff8a5c');
+      else if (p.boostCd > 0) this.note(`${tr('Boost')} ${Math.ceil(p.boostCd)}s`, '#d8d0b8');
+      else {
+        this.controls.boost();
+        if (b.mode === 'replica') p.startBoost();
+      }
+    } else if (id === 'repair' && p) {
+      if (p.burning > 0) {
+        if (p.extinguishCd > 0) this.note(`${tr('Extinguisher')} ${Math.ceil(p.extinguishCd)}s`, '#d8d0b8');
+        else this.controls.repair();
+      } else if (p.repairT > 0) return;
+      else if (!p.needsRepair()) this.note(tr('Nothing to repair'), '#c8c8c0');
+      else if (p.repairCd > 0) this.note(`${tr('Repair')} ${Math.ceil(p.repairCd)}s`, '#d8d0b8');
+      else if (p.crewAlive().length < 2) this.note(tr('Not enough crew'), '#ff8a5c');
+      else this.controls.repair();
+    } else if (id === 'zin') this.r.zoomStep(1);
+    else if (id === 'zout') {
+      this.r.zoomStep(-1);
+      if (this.r.zoomMul <= 1.05) this.endSight();
+    } else if (id === 'pause') this.onPause();
     else if (id.startsWith('spawn:')) {
       if (b.time - b.deadAt > 2.5) {
-        b.respawnPlayer(id.slice(6));
+        this.controls.respawn(id.slice(6));
         this.deathInfo = null;
-        this.trackTarget = null;
       }
     } else if (id === 'leave') this.onLeave();
   }
 
-  private fire() {
-    const p = this.b.player;
-    if (!p || !p.alive) return;
-    if (p.isReloaded() && p.canFire()) {
-      this.b.playerFire();
-      this.fireFlash = 0.15;
-      this.r.shake = Math.min(1, 0.4 + p.spec.gun.caliber / 200);
-    }
-  }
-
   private stickR() {
     return clamp(this.r.H * 0.16, 46, 70);
+  }
+  private fireDZ() {
+    return this.fireC.r * 0.36;
   }
 
   // ------------------------------------------------------------------ per-frame control
@@ -250,16 +482,30 @@ export class Hud {
     if (this.deathInfo) this.deathInfo.t += dt;
     if (this.tutorial > 0 && b.time > 4.6) this.tutorial -= dt;
 
-    if (!p || !p.alive) {
+    if (!p || !p.alive || b.state !== 'playing') {
       this.move = null;
-      this.aim = null;
+      this.fireStick = null;
+      this.smokeStick = null;
+      this.brakeHeld = false;
+      if (this.sight) this.endSight();
+      if (p) p.handbrake = false;
       return;
     }
+    if (this.prevRepairT > 0 && p.repairT <= 0 && p.repairCd > 0) this.note(tr('Repairs complete'), '#9fd3ff');
+    this.prevRepairT = p.repairT;
+    // our gun just fired: flash the button and kick the camera
+    if (p.recoil > this.prevRecoil + 0.3) {
+      this.fireFlash = 0.15;
+      this.r.shake = Math.min(1, 0.4 + p.spec.gun.caliber / 200);
+    }
+    this.prevRecoil = p.recoil;
+
     // movement
     if (this.autoInput) {
       this.autoInput(p);
       return;
     }
+    p.handbrake = this.brakeHeld;
     if (this.move) {
       const R = this.stickR();
       const v = { x: this.move.pos.x - this.move.base.x, y: this.move.pos.y - this.move.base.y };
@@ -294,36 +540,41 @@ export class Hud {
         if (Math.abs(d) > arc * 0.95) p.steer = clamp(d * 2, -1, 1);
       }
     }
-    // aiming
-    const tp = p.turretPos();
+    // aiming: the fire stick sets the gun direction; the aim then stays put (stabilised in the world)
     this.aimAssistTarget = null;
-    if (this.aim && this.aim.moved) {
-      const v = { x: this.aim.pos.x - this.aim.base.x, y: this.aim.pos.y - this.aim.base.y };
-      let a = Math.atan2(v.y, v.x);
-      // light aim assist toward spotted enemies near the stick direction
-      let best: Tank | null = null;
-      let bestD = 3.2 * DEG;
-      for (const e of b.tanks) {
-        if (!e.alive || e.team === p.team || !b.isSpotted(p.team, e)) continue;
-        const ba = Math.atan2(e.pos.y - tp.y, e.pos.x - tp.x);
-        const d = Math.abs(angDiff(a, ba));
-        if (d < bestD) {
-          bestD = d;
-          best = e;
-        }
+    const fs = this.fireStick;
+    if (fs && fs.moved && dist(fs.pos, fs.base) >= this.fireDZ()) {
+      p.aimAngle = this.assist(p, fs.ang);
+    } else if (this.sight) {
+      if (this.r.zoomMul <= 1.05) this.endSight();
+      else {
+        const w = this.r.toWorldPt(this.sight.pos);
+        const tp = p.turretPos();
+        if (dist(w, tp) > 2) p.aimAngle = Math.atan2(w.y - tp.y, w.x - tp.x);
       }
-      if (best) {
-        const ba = this.leadAngle(p, best);
-        a = ba + angDiff(ba, a) * 0.35;
-        this.aimAssistTarget = best;
-      }
-      p.aimAngle = a;
-    } else if (this.trackTarget) {
-      const e = this.trackTarget;
-      if (!e.alive || !b.isSpotted(p.team, e)) this.trackTarget = null;
-      else p.aimAngle = this.leadAngle(p, e);
     }
     audio.engineSet(Math.min(1, Math.abs(p.speed) / p.maxSpeed() + Math.abs(p.throttle) * 0.3), p.alive);
+  }
+
+  /** Light aim assist toward spotted enemies close to the stick direction (off when zoomed in). */
+  private assist(p: Tank, a: number): number {
+    if (this.r.zoomMul > 1.05) return a;
+    const tp = p.turretPos();
+    let best: Tank | null = null;
+    let bestD = 2.5 * DEG;
+    for (const e of this.b.tanks) {
+      if (!e.alive || e.team === p.team || !this.b.isSpotted(p.team, e)) continue;
+      const ba = Math.atan2(e.pos.y - tp.y, e.pos.x - tp.x);
+      const d = Math.abs(angDiff(a, ba));
+      if (d < bestD) {
+        bestD = d;
+        best = e;
+      }
+    }
+    if (!best) return a;
+    this.aimAssistTarget = best;
+    const ba = this.leadAngle(p, best);
+    return ba + angDiff(ba, a) * 0.5;
   }
 
   private leadAngle(p: Tank, e: Tank): number {
@@ -331,17 +582,17 @@ export class Hud {
     const d = dist(tp, e.pos);
     const v = p.spec.gun.shells[p.shellIdx].velocity * this.b.shellSpeedScale;
     const tof = d / v;
-    const x = e.pos.x + Math.cos(e.ang) * e.speed * tof;
-    const y = e.pos.y + Math.sin(e.ang) * e.speed * tof;
+    const x = e.pos.x + e.vel.x * tof;
+    const y = e.pos.y + e.vel.y * tof;
     return Math.atan2(y - tp.y, x - tp.x);
   }
 
   // ------------------------------------------------------------------ events
   handle(ev: BattleEvent) {
     const b = this.b;
+    if ('to' in ev && ev.to !== undefined && ev.to !== b.localKey) return;
     switch (ev.type) {
       case 'hit': {
-        const involvesPlayer = ev.shooter.isPlayer || ev.target.isPlayer;
         if (ev.shooter.isPlayer && ev.target.team !== ev.shooter.team) {
           const { title, color } = hitTitle(ev.res, ev.res.killed);
           this.hitcams = [{ res: ev.res, target: ev.target, shooter: ev.shooter, t: 0, life: 3.2, title, color }];
@@ -354,7 +605,6 @@ export class Hud {
           this.incoming.push({ ang: Math.atan2(ev.shooter.pos.y - tp.y, ev.shooter.pos.x - tp.x), t: 0, pen: ev.res.outcome === 'pen' });
           if (this.incoming.length > 4) this.incoming.shift();
         }
-        void involvesPlayer;
         break;
       }
       case 'popup':
@@ -362,19 +612,19 @@ export class Hud {
         break;
       case 'feed': {
         const k = ev.killer;
-        const kn = k ? `${k.isPlayer ? '★ ' : ''}${k.spec.name}` : '';
+        const nm = (t: Tank) => (t.slot && !t.isPlayer ? `${t.name} · ${t.spec.name}` : t.spec.name);
+        const kn = k ? `${k.isPlayer ? '★ ' : ''}${nm(k)}` : '';
         const icon = ev.how === 'cookoff' ? ' ✸ ' : ' ▸ ';
-        const text = k ? `${kn}${icon}${ev.victim.spec.name}` : `${ev.victim.spec.name} ✸`;
+        const text = k ? `${kn}${icon}${nm(ev.victim)}` : `${nm(ev.victim)} ✸`;
         this.feed.unshift({ text, killerFriend: k ? k.team === b.playerTeam : ev.victim.team !== b.playerTeam, t: 0 });
         this.feed = this.feed.slice(0, 5);
         break;
       }
       case 'notice':
-        this.notices.unshift({ text: tr(ev.text), color: ev.color ?? '#ffd27a', t: 0 });
-        this.notices = this.notices.slice(0, 3);
+        this.note(tr(ev.text), ev.color ?? '#ffd27a');
         break;
       case 'captured':
-        this.notices.unshift({ text: ev.team === b.playerTeam ? tr('Point A captured') : tr('Point A lost'), color: ev.team === b.playerTeam ? TEAM_COL.friend : TEAM_COL.enemy, t: 0 });
+        this.note(ev.team === b.playerTeam ? tr('Point A captured') : tr('Point A lost'), ev.team === b.playerTeam ? TEAM_COL.friend : TEAM_COL.enemy);
         break;
       case 'playerDead': {
         let entry: HitCamEntry | null = null;
@@ -384,7 +634,6 @@ export class Hud {
           entry = { res: ev.res, target: b.player, shooter: ev.killer ?? b.player, t: 1.0, life: 9999, title, color };
         }
         this.deathInfo = { killer: ev.killer, res: entry, t: 0 };
-        this.trackTarget = null;
         break;
       }
     }
@@ -405,22 +654,37 @@ export class Hud {
     this.drawScore(ctx, W, s);
     this.drawMinimap(ctx, s);
     const p = b.player;
+    const live = !!p && p.alive && b.state === 'playing';
     if (p && p.alive) this.drawDamage(ctx, p, s);
     this.drawFeed(ctx, W, s);
     this.drawNotices(ctx, W, s);
     if (this.hitcams.length && b.state === 'playing') {
       const hw = clamp(W * 0.32, 230, 320);
-      const hh = clamp(H * 0.44, 140, 200);
-      drawHitCam(ctx, this.hitcams[0], W - s.r - hw - 10, s.t + 54 + this.feed.length * 17, hw, hh);
+      const y = s.t + 54 + this.feed.length * 17;
+      const hh = Math.min(clamp(H * 0.44, 140, 200), (live ? this.arcTop - 14 : H - s.b) - 8 - y);
+      if (hh > 90) drawHitCam(ctx, this.hitcams[0], W - s.r - hw - 10, y, hw, hh);
     }
 
-    if (p && p.alive && b.state === 'playing') {
+    if (live && p) {
       this.drawIncoming(ctx, p);
-      this.drawPenInfo(ctx, W, H);
-      this.drawSticks(ctx);
+      this.drawOwnMarker(ctx, p);
+      this.drawSmokePreview(ctx, p);
+      this.drawPenInfo(ctx, W, s);
+      this.drawMoveStick(ctx);
       this.drawButtons(ctx, p);
+      this.drawFireStick(ctx, p);
+      if (this.sight) this.drawSightTouch(ctx);
     } else {
-      for (const bt of this.buttons) if (bt.id === 'pause' || bt.id === 'zoom') this.drawRoundBtn(ctx, bt, bt.id === 'pause' ? 'II' : '⌕', false);
+      for (const bt of this.buttons) this.drawTopBtn(ctx, bt);
+    }
+    if (this.netInfo) {
+      const size = clamp(H * 0.3, 96, 128);
+      ctx.save();
+      ctx.font = '600 10px "Barlow Condensed", sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillStyle = 'rgba(220,225,215,0.75)';
+      ctx.fillText(this.netInfo, s.l + 12, s.t + 10 + size + 10 + clamp(H * 0.25, 78, 104) + 14);
+      ctx.restore();
     }
     if (b.state === 'dead') this.drawDeath(ctx, W, H, s);
     if (b.time < 4.5 && b.state === 'playing') this.drawBanner(ctx, W, H, tr('DOMINATION'), tr('Capture and hold point A'), '#f2b449', b.time < 0.4 ? b.time / 0.4 : b.time > 3.7 ? (4.5 - b.time) / 0.8 : 1);
@@ -428,7 +692,7 @@ export class Hud {
       const win = b.result === 'victory';
       this.drawBanner(ctx, W, H, tr(win ? 'VICTORY' : 'DEFEAT'), win ? tr('The enemy has been defeated') : tr('Your team has been defeated'), win ? '#f2b449' : '#e8473b', 1);
     }
-    if (this.tutorial > 0 && b.state === 'playing' && b.time > 4.6) this.drawTutorial(ctx, W, H);
+    if (this.tutorial > 0 && live && b.time > 4.6) this.drawTutorial(ctx, W, H);
     ctx.restore();
   }
 
@@ -448,7 +712,7 @@ export class Hud {
     roundRect(ctx, cx + 30, y - 8, bw, 16, 3);
     ctx.fill();
     ctx.fillStyle = TEAM_COL.friend;
-    roundRect(ctx, cx - 30 - bw * own, y - 6, bw * own - 2, 12, 2);
+    roundRect(ctx, cx - 30 - bw * own, y - 6, Math.max(0, bw * own - 2), 12, 2);
     ctx.fill();
     ctx.fillStyle = TEAM_COL.enemy;
     roundRect(ctx, cx + 32, y - 6, Math.max(0, bw * enemy - 2), 12, 2);
@@ -499,7 +763,7 @@ export class Hud {
     ctx.fillStyle = 'rgba(255,170,160,0.95)';
     ctx.fillText(`+${b.reinforcements[et]}  ▮ ${aliveEn}`, cx + 36, y + 18);
     // timer
-    const left = Math.max(0, 12 * 60 - b.time);
+    const left = Math.max(0, BATTLE_TIME - b.time);
     const mm = Math.floor(left / 60);
     const ss = Math.floor(left % 60);
     ctx.textAlign = 'center';
@@ -574,6 +838,13 @@ export class Hud {
     ctx.strokeStyle = 'rgba(255,255,255,0.35)';
     ctx.lineWidth = 1;
     ctx.strokeRect(x + r.cam.x * sc - vw / 2, y + r.cam.y * sc - vh / 2, vw, vh);
+    // smoke screens
+    ctx.fillStyle = 'rgba(230,230,225,0.45)';
+    for (const sm of b.map.smokes) {
+      ctx.beginPath();
+      ctx.arc(x + sm.x * sc, y + sm.y * sc, Math.max(1.5, sm.r * sc), 0, Math.PI * 2);
+      ctx.fill();
+    }
     // capture
     const c = b.map.capture;
     const cap = b.capture;
@@ -596,7 +867,7 @@ export class Hud {
       ctx.save();
       ctx.translate(px, py);
       ctx.rotate(t.ang);
-      ctx.fillStyle = t.isPlayer ? '#ffffff' : friend ? TEAM_COL.friend : TEAM_COL.enemy;
+      ctx.fillStyle = t.isPlayer ? '#ffffff' : friend ? (t.slot ? '#9cc4ff' : TEAM_COL.friend) : TEAM_COL.enemy;
       ctx.beginPath();
       ctx.moveTo(4.5, 0);
       ctx.lineTo(-3, -3);
@@ -643,8 +914,8 @@ export class Hud {
     // right column: speed, fire, repairs
     ctx.textAlign = 'left';
     ctx.font = '700 13px "Barlow Condensed", sans-serif';
-    ctx.fillStyle = '#eee';
-    const kmh = Math.round(Math.abs(p.speed) * 3.6);
+    ctx.fillStyle = p.boostT > 0 ? '#ffcf6e' : '#eee';
+    const kmh = Math.round(Math.hypot(p.vel.x, p.vel.y) * 3.6);
     ctx.fillText(`${kmh}`, x + w * 0.7, y + 14);
     ctx.font = '500 9px "Barlow Condensed", sans-serif';
     ctx.fillStyle = 'rgba(220,220,210,0.7)';
@@ -656,11 +927,10 @@ export class Hud {
       ctx.fillText(tr('BURNING'), x + w * 0.7, yy);
       yy += 13;
     }
-    const rep = p.mods.find((m) => m.repair > 0);
-    if (rep) {
-      ctx.fillStyle = '#ffd27a';
+    if (p.repairT > 0) {
+      ctx.fillStyle = '#9fd3ff';
       ctx.font = '600 10px "Barlow Condensed", sans-serif';
-      ctx.fillText(`🔧 ${Math.ceil(rep.repair)}s`, x + w * 0.7, yy);
+      ctx.fillText(`${tr('REPAIRING')} ${Math.ceil(p.repairT)}s`, x + w * 0.7, yy);
       yy += 13;
     }
     const enemyTeam = p.team === 0 ? 1 : 0;
@@ -700,7 +970,7 @@ export class Hud {
   private drawNotices(ctx: Ctx, W: number, s: typeof this.safe) {
     ctx.save();
     ctx.textAlign = 'center';
-    let y = s.t + 62;
+    let y = s.t + 86;
     for (const n of this.notices) {
       const a = n.t < 0.15 ? n.t / 0.15 : n.t > 2.1 ? (2.6 - n.t) / 0.5 : 1;
       ctx.globalAlpha = Math.max(0, a);
@@ -739,7 +1009,71 @@ export class Hud {
     ctx.restore();
   }
 
-  private drawPenInfo(ctx: Ctx, W: number, H: number) {
+  /** When the sight view has slid away from our own tank, point back to it. */
+  private drawOwnMarker(ctx: Ctx, p: Tank) {
+    const sp = this.r.toScreen(p.pos);
+    const W = this.r.W;
+    const H = this.r.H;
+    const m = 26;
+    if (sp.x > m && sp.x < W - m && sp.y > m && sp.y < H - m) return;
+    const cx = W / 2;
+    const cy = H / 2;
+    const a = Math.atan2(sp.y - cy, sp.x - cx);
+    const kx = (W / 2 - m) / Math.max(1e-3, Math.abs(Math.cos(a)));
+    const ky = (H / 2 - m) / Math.max(1e-3, Math.abs(Math.sin(a)));
+    const k = Math.min(kx, ky);
+    const x = cx + Math.cos(a) * k;
+    const y = cy + Math.sin(a) * k;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(a);
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.beginPath();
+    ctx.moveTo(9, 0);
+    ctx.lineTo(-5, -7);
+    ctx.lineTo(-2, 0);
+    ctx.lineTo(-5, 7);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  private drawSmokePreview(ctx: Ctx, p: Tank) {
+    const st = this.smokeStick;
+    if (!st) return;
+    const out = st.moved && dist(st.pos, st.base) >= 16;
+    if (st.moved && !out) return;
+    const a = out ? st.ang : p.gunWorldAng;
+    const tp = p.turretPos();
+    const z = this.r.zoom;
+    ctx.save();
+    ctx.setLineDash([4, 4]);
+    for (const off of [-0.22, 0, 0.22]) {
+      const w = { x: tp.x + Math.cos(a + off) * 24.5, y: tp.y + Math.sin(a + off) * 24.5 };
+      const sp = this.r.toScreen(w);
+      ctx.fillStyle = 'rgba(235,235,230,0.16)';
+      ctx.strokeStyle = 'rgba(245,245,240,0.6)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, 8 * z, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  private drawSightTouch(ctx: Ctx) {
+    const s = this.sight!;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,240,200,0.5)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(s.pos.x, s.pos.y, 22, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  private drawPenInfo(ctx: Ctx, W: number, s: typeof this.safe) {
     const pr = this.r.aimPrediction;
     if (!pr || pr.outcome === 'none') return;
     const txt =
@@ -750,7 +1084,7 @@ export class Hud {
     ctx.font = '700 12px "Barlow Condensed", sans-serif';
     ctx.textAlign = 'center';
     const tw = ctx.measureText(txt).width;
-    const y = H - this.safe.b - 18;
+    const y = s.t + 60;
     ctx.fillStyle = 'rgba(10,12,10,0.55)';
     roundRect(ctx, W / 2 - tw / 2 - 10, y - 10, tw + 20, 20, 4);
     ctx.fill();
@@ -759,53 +1093,140 @@ export class Hud {
     ctx.restore();
   }
 
-  private drawSticks(ctx: Ctx) {
+  private drawMoveStick(ctx: Ctx) {
     const R = this.stickR();
-    const draw = (st: Stick, aim: boolean) => {
+    const st = this.move;
+    ctx.save();
+    if (st) {
       const v = { x: st.pos.x - st.base.x, y: st.pos.y - st.base.y };
       const l = Math.hypot(v.x, v.y);
       const k = l > R ? R / l : 1;
-      const kx = st.base.x + v.x * k;
-      const ky = st.base.y + v.y * k;
-      ctx.save();
       ctx.fillStyle = 'rgba(20,22,20,0.28)';
-      ctx.strokeStyle = aim ? 'rgba(255,215,140,0.55)' : 'rgba(255,255,255,0.4)';
+      ctx.strokeStyle = 'rgba(255,255,255,0.4)';
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.arc(st.base.x, st.base.y, R, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
-      if (aim) {
-        ctx.strokeStyle = 'rgba(255,120,90,0.35)';
-        ctx.setLineDash([3, 4]);
-        ctx.beginPath();
-        ctx.arc(st.base.x, st.base.y, R * 0.3, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
-      ctx.fillStyle = aim ? 'rgba(255,210,130,0.75)' : 'rgba(240,240,235,0.65)';
+      ctx.fillStyle = 'rgba(240,240,235,0.65)';
       ctx.beginPath();
-      ctx.arc(kx, ky, R * 0.38, 0, Math.PI * 2);
+      ctx.arc(st.base.x + v.x * k, st.base.y + v.y * k, R * 0.38, 0, Math.PI * 2);
       ctx.fill();
-      ctx.restore();
-    };
-    if (this.move) draw(this.move, false);
-    else {
+    } else {
       // hint ring where the move stick usually sits
-      const R2 = R;
-      ctx.save();
       ctx.strokeStyle = 'rgba(255,255,255,0.12)';
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(this.safe.l + R2 + 28, this.r.H - this.safe.b - R2 - 22, R2, 0, Math.PI * 2);
+      ctx.arc(this.safe.l + R + 28, this.r.H - this.safe.b - R - 22, R, 0, Math.PI * 2);
       ctx.stroke();
-      ctx.restore();
     }
-    if (this.aim && this.aim.moved) draw(this.aim, true);
+    ctx.restore();
   }
 
-  private drawRoundBtn(ctx: Ctx, b: Btn, label: string, active: boolean, col = 'rgba(20,22,20,0.55)') {
+  private drawFireStick(ctx: Ctx, p: Tank) {
+    const { x, y, r } = this.fireC;
+    const st = this.fireStick;
+    const ready = p.isReloaded() && p.canFire();
+    const dz = this.fireDZ();
+    const dragging = !!st && st.moved;
+    const off = st ? dist(st.pos, st.base) : 0;
+    const cancel = dragging && off < dz;
+    const queued = !!p.fireReq;
     ctx.save();
+    // base
+    ctx.fillStyle = cancel ? 'rgba(40,40,38,0.75)' : ready ? 'rgba(170,60,40,0.62)' : 'rgba(30,30,28,0.6)';
+    if (this.fireFlash > 0) ctx.fillStyle = 'rgba(255,170,90,0.8)';
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = ready ? 'rgba(255,200,150,0.9)' : 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // reload ring
+    if (!p.isReloaded()) {
+      const frac = 1 - p.reloadLeft / p.reloadTime();
+      ctx.strokeStyle = 'rgba(255,220,150,0.95)';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(x, y, r - 3, -Math.PI / 2, -Math.PI / 2 + clamp(frac, 0, 1) * Math.PI * 2);
+      ctx.stroke();
+    }
+    // queued shot: pulsing outline
+    if (queued) {
+      const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 90);
+      ctx.strokeStyle = `rgba(255,236,170,${0.45 + pulse * 0.5})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(x, y, r + 5, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    if (dragging && st) {
+      // dead zone ring = cancel area
+      ctx.setLineDash([3, 4]);
+      ctx.strokeStyle = cancel ? 'rgba(255,120,100,0.95)' : 'rgba(255,255,255,0.35)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(x, y, dz, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if (!cancel) {
+        // knob along the aim direction
+        const kl = Math.min(off, r * 0.92);
+        const kx = x + Math.cos(st.ang) * kl;
+        const ky = y + Math.sin(st.ang) * kl;
+        ctx.strokeStyle = 'rgba(255,225,170,0.55)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(kx, ky);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(255,215,140,0.9)';
+        ctx.beginPath();
+        ctx.arc(kx, ky, r * 0.34, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.fillStyle = '#ffb0a0';
+        ctx.font = '700 14px "Barlow Condensed", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('✕', x, y + 1);
+      }
+      // hint label above the button
+      ctx.font = '700 11px "Barlow Condensed", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+      const label = cancel ? tr('Release to cancel') : ready ? tr('Release to fire') : `${tr('Release to fire')} · ${p.reloadLeft.toFixed(1)}s`;
+      ctx.textAlign = 'right';
+      ctx.strokeText(label, x + r, this.arcTop - 4);
+      ctx.fillStyle = cancel ? '#ffb0a0' : '#ffe2b0';
+      ctx.fillText(label, x + r, this.arcTop - 4);
+    } else {
+      ctx.fillStyle = '#f0f0e8';
+      ctx.font = '700 15px "Barlow Condensed", sans-serif';
+      ctx.textAlign = 'center';
+      const txt = !p.canFire() ? '✕' : !p.isReloaded() ? p.reloadLeft.toFixed(1) : tr('FIRE');
+      ctx.fillText(txt, x, y + 1);
+    }
+    ctx.restore();
+  }
+
+  private drawTopBtn(ctx: Ctx, bt: Btn) {
+    if (bt.id === 'pause') this.drawRoundBtn(ctx, bt, 'II', false);
+    else if (bt.id === 'zin') this.drawRoundBtn(ctx, bt, '+', this.r.zoomMul > 1.05, undefined, this.r.zoomIdx >= 3);
+    else if (bt.id === 'zout') this.drawRoundBtn(ctx, bt, '−', this.r.zoomMul < 0.95, undefined, this.r.zoomIdx <= 0);
+    if (bt.id === 'zout' && this.r.zoomIdx !== 1) {
+      ctx.save();
+      ctx.font = '700 12px "Barlow Condensed", sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillStyle = 'rgba(255,226,170,0.95)';
+      ctx.fillText(`${this.r.zoomMul}×`, bt.x - bt.r! - 6, bt.y + 1);
+      ctx.restore();
+    }
+  }
+
+  private drawRoundBtn(ctx: Ctx, b: Btn, label: string, active: boolean, col = 'rgba(20,22,20,0.55)', dim = false) {
+    ctx.save();
+    ctx.globalAlpha = dim ? 0.45 : 1;
     ctx.fillStyle = col;
     ctx.beginPath();
     ctx.arc(b.x, b.y, b.r!, 0, Math.PI * 2);
@@ -814,46 +1235,79 @@ export class Hud {
     ctx.lineWidth = 1.5;
     ctx.stroke();
     ctx.fillStyle = '#f2f2ea';
-    ctx.font = `700 ${Math.round(b.r! * 0.8)}px "Barlow Condensed", sans-serif`;
+    ctx.font = `700 ${Math.round(b.r! * 0.95)}px "Barlow Condensed", sans-serif`;
     ctx.textAlign = 'center';
     ctx.fillText(label, b.x, b.y + 1);
     ctx.restore();
   }
 
+  /** Round ability button with label, cooldown sweep and optional progress ring / badge. */
+  private drawAbility(ctx: Ctx, bt: Btn, label: string, o: { active?: boolean; cd?: number; prog?: number; dim?: boolean; pulse?: string; badge?: string; fill?: string; sub?: string }) {
+    const r = bt.r!;
+    ctx.save();
+    ctx.globalAlpha = o.dim ? 0.45 : 1;
+    ctx.fillStyle = o.fill ?? (o.active ? 'rgba(200,140,60,0.75)' : 'rgba(20,22,20,0.58)');
+    ctx.beginPath();
+    ctx.arc(bt.x, bt.y, r, 0, Math.PI * 2);
+    ctx.fill();
+    if (o.pulse) {
+      const k = 0.5 + 0.5 * Math.sin(performance.now() / 160);
+      ctx.strokeStyle = o.pulse;
+      ctx.globalAlpha = (o.dim ? 0.45 : 1) * (0.4 + 0.6 * k);
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(bt.x, bt.y, r + 3, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = o.dim ? 0.45 : 1;
+    }
+    ctx.strokeStyle = o.active ? 'rgba(255,220,160,0.95)' : 'rgba(255,255,255,0.3)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(bt.x, bt.y, r, 0, Math.PI * 2);
+    ctx.stroke();
+    if (o.cd !== undefined && o.cd > 0) {
+      // remaining cooldown as a dark sweep
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.beginPath();
+      ctx.moveTo(bt.x, bt.y);
+      ctx.arc(bt.x, bt.y, r, -Math.PI / 2, -Math.PI / 2 + clamp(o.cd, 0, 1) * Math.PI * 2);
+      ctx.closePath();
+      ctx.fill();
+    }
+    if (o.prog !== undefined) {
+      ctx.strokeStyle = 'rgba(160,215,255,0.95)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(bt.x, bt.y, r - 2, -Math.PI / 2, -Math.PI / 2 + clamp(o.prog, 0, 1) * Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.fillStyle = '#f4f2ea';
+    ctx.textAlign = 'center';
+    ctx.font = `700 ${Math.round(clamp(r * 0.46, 10, 12))}px "Barlow Condensed", sans-serif`;
+    ctx.fillText(label, bt.x, bt.y + (o.sub ? -4 : 1));
+    if (o.sub) {
+      ctx.font = `600 ${Math.round(clamp(r * 0.42, 9, 11))}px "Barlow Condensed", sans-serif`;
+      ctx.fillStyle = 'rgba(255,236,190,0.95)';
+      ctx.fillText(o.sub, bt.x, bt.y + 8);
+    }
+    if (o.badge) {
+      const bx = bt.x + r * 0.72;
+      const by = bt.y - r * 0.72;
+      ctx.fillStyle = 'rgba(230,180,80,0.95)';
+      ctx.beginPath();
+      ctx.arc(bx, by, 7.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#1b1a16';
+      ctx.font = '700 10px "Barlow Condensed", sans-serif';
+      ctx.fillText(o.badge, bx, by + 0.5);
+    }
+    ctx.restore();
+  }
+
   private drawButtons(ctx: Ctx, p: Tank) {
     for (const bt of this.buttons) {
-      if (bt.id === 'fire') {
-        const ready = p.isReloaded() && p.canFire();
-        ctx.save();
-        ctx.fillStyle = ready ? 'rgba(170,60,40,0.62)' : 'rgba(30,30,28,0.6)';
-        if (this.fireFlash > 0) ctx.fillStyle = 'rgba(255,170,90,0.8)';
-        ctx.beginPath();
-        ctx.arc(bt.x, bt.y, bt.r!, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = ready ? 'rgba(255,200,150,0.9)' : 'rgba(255,255,255,0.25)';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        if (!p.isReloaded()) {
-          const frac = 1 - p.reloadLeft / p.reloadTime();
-          ctx.strokeStyle = 'rgba(255,220,150,0.95)';
-          ctx.lineWidth = 4;
-          ctx.beginPath();
-          ctx.arc(bt.x, bt.y, bt.r! - 3, -Math.PI / 2, -Math.PI / 2 + frac * Math.PI * 2);
-          ctx.stroke();
-          ctx.fillStyle = '#f0f0e8';
-          ctx.font = '700 15px "Barlow Condensed", sans-serif';
-          ctx.textAlign = 'center';
-          ctx.fillText(p.canFire() ? p.reloadLeft.toFixed(1) : '✕', bt.x, bt.y + 1);
-        } else {
-          ctx.fillStyle = '#fff';
-          ctx.font = '700 14px "Barlow Condensed", sans-serif';
-          ctx.textAlign = 'center';
-          ctx.fillText(p.canFire() ? tr('FIRE') : '✕', bt.x, bt.y + 1);
-        }
-        ctx.restore();
-      } else if (bt.id.startsWith('ammo')) {
+      if (bt.id.startsWith('ammo')) {
         const i = parseInt(bt.id.slice(4), 10);
-        const sh = p.spec.gun.shells[i];
         const sel = p.shellIdx === i;
         ctx.save();
         ctx.fillStyle = sel ? 'rgba(200,140,60,0.7)' : 'rgba(20,22,20,0.55)';
@@ -869,17 +1323,38 @@ export class Hud {
         ctx.font = '500 10px "Barlow Condensed", sans-serif';
         ctx.fillText(`${p.ammo[i]}`, bt.x + bt.w! / 2, bt.y + 22);
         ctx.restore();
-      } else if (bt.id === 'ext') {
-        const pulse = 0.6 + 0.4 * Math.sin(performance.now() / 120);
-        this.drawRoundBtn(ctx, bt, '🧯', true, `rgba(200,60,30,${0.5 + pulse * 0.3})`);
-        if (p.extinguishCd > 0) {
-          ctx.fillStyle = '#fff';
-          ctx.font = '600 10px "Barlow Condensed", sans-serif';
-          ctx.textAlign = 'center';
-          ctx.fillText(`${Math.ceil(p.extinguishCd)}`, bt.x, bt.y + bt.r! + 9);
+      } else if (bt.id === 'brake') {
+        this.drawAbility(ctx, bt, tr('BRAKE'), { active: this.brakeHeld, dim: !p.canMove() });
+      } else if (bt.id === 'boost') {
+        const on = p.boostT > 0;
+        this.drawAbility(ctx, bt, tr('BOOST'), { active: on, cd: on ? 0 : p.boostCd / Tank.BOOST_CD, dim: !p.canMove() && !on, sub: on ? `${p.boostT.toFixed(1)}` : p.boostCd > 0 ? `${Math.ceil(p.boostCd)}` : undefined });
+      } else if (bt.id === 'smoke') {
+        const st = this.smokeStick;
+        this.drawAbility(ctx, bt, tr('SMOKE'), { active: !!st, cd: p.smokeCd / 4, dim: p.smokeCharges <= 0, badge: String(p.smokeCharges) });
+        if (st && st.moved && dist(st.pos, st.base) >= 16) {
+          const kl = Math.min(dist(st.pos, st.base), this.fireC.r);
+          ctx.save();
+          ctx.strokeStyle = 'rgba(240,240,235,0.35)';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.arc(bt.x, bt.y, this.fireC.r, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.fillStyle = 'rgba(240,240,235,0.75)';
+          ctx.beginPath();
+          ctx.arc(bt.x + Math.cos(st.ang) * kl, bt.y + Math.sin(st.ang) * kl, bt.r! * 0.55, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
         }
-      } else if (bt.id === 'pause') this.drawRoundBtn(ctx, bt, 'II', false);
-      else if (bt.id === 'zoom') this.drawRoundBtn(ctx, bt, this.r.zoomOut ? '−' : '⌕', this.r.zoomOut);
+      } else if (bt.id === 'repair') {
+        if (p.burning > 0) {
+          this.drawAbility(ctx, bt, tr('PUT OUT'), { fill: 'rgba(190,60,30,0.8)', pulse: p.extinguishCd > 0 ? undefined : 'rgba(255,140,90,1)', cd: p.extinguishCd / 30, sub: p.extinguishCd > 0 ? `${Math.ceil(p.extinguishCd)}` : undefined });
+        } else if (p.repairT > 0) {
+          this.drawAbility(ctx, bt, tr('REPAIR'), { active: true, prog: 1 - p.repairT / Tank.REPAIR_TIME, sub: `${Math.ceil(p.repairT)}` });
+        } else {
+          const need = p.needsRepair();
+          this.drawAbility(ctx, bt, tr('REPAIR'), { cd: p.repairCd / Tank.REPAIR_CD, dim: !need, pulse: need && p.repairCd <= 0 ? 'rgba(255,210,110,1)' : undefined, sub: p.repairCd > 0 ? `${Math.ceil(p.repairCd)}` : undefined });
+        }
+      } else this.drawTopBtn(ctx, bt);
     }
   }
 
@@ -909,9 +1384,10 @@ export class Hud {
     ctx.save();
     ctx.globalAlpha = Math.max(0, a);
     const box = (x: number, y: number, title: string, sub: string) => {
-      ctx.font = '700 16px "Barlow Condensed", sans-serif';
+      ctx.font = '700 15px "Barlow Condensed", sans-serif';
       const w = Math.max(ctx.measureText(title).width, (ctx.font = '500 12px "Barlow Condensed", sans-serif', ctx.measureText(sub).width)) + 24;
-      ctx.fillStyle = 'rgba(12,14,12,0.72)';
+      x = clamp(x, w / 2 + 8, W - w / 2 - 8);
+      ctx.fillStyle = 'rgba(12,14,12,0.74)';
       roundRect(ctx, x - w / 2, y - 22, w, 44, 6);
       ctx.fill();
       ctx.strokeStyle = 'rgba(240,180,90,0.7)';
@@ -919,14 +1395,16 @@ export class Hud {
       ctx.stroke();
       ctx.textAlign = 'center';
       ctx.fillStyle = '#f2b449';
-      ctx.font = '700 16px "Barlow Condensed", sans-serif';
+      ctx.font = '700 15px "Barlow Condensed", sans-serif';
       ctx.fillText(title, x, y - 7);
       ctx.fillStyle = '#e6e6dc';
       ctx.font = '500 12px "Barlow Condensed", sans-serif';
       ctx.fillText(sub, x, y + 11);
     };
     box(W * 0.24, H * 0.6, tr('◀ DRAG TO DRIVE'), tr('Push where you want to go · pull back to reverse'));
-    box(W * 0.66, H * 0.38, tr('DRAG TO AIM ▶'), tr('Release to fire · green reticle = will penetrate'));
+    const fc = this.fireC;
+    box(fc.x - fc.r * 3.2, this.arcTop - 34, tr('DRAG THE FIRE BUTTON TO AIM'), tr('Release to fire · slide back to the centre to cancel'));
+    box(fc.x - fc.r * 3.2, this.arcTop - 86, tr('BRAKE: hold to drift · SMOKE: drag to throw'), tr('+ / − zoom · zoomed in, touch the battlefield to aim precisely'));
     ctx.restore();
   }
 

@@ -36,6 +36,26 @@ export class Tank {
   throttle = 0;
   steer = 0;
   wantFire = false;
+  handbrake = false;
+  /** world-space velocity (m/s); tracks pull it toward the hull direction, the handbrake lets it slide */
+  vel: V2 = { x: 0, y: 0 };
+
+  // special abilities
+  boostT = 0;
+  boostCd = 0;
+  repairT = 0;
+  repairCd = 0;
+  smokeCharges = 2;
+  smokeCd = 0;
+  /** request from controls: launch smoke toward this world angle */
+  wantSmoke: number | null = null;
+  /** queued shot: fires as soon as the gun is loaded and on the aim angle (until `until`) */
+  fireReq: { until: number } | null = null;
+  lastHitTime = -99;
+  /** human-controlled slot key (null = AI) */
+  slot: string | null = null;
+  /** latest network snapshot (replica battles only) */
+  net: { x: number; y: number; ang: number; tRel: number; gRel: number; speed: number; vx: number; vy: number } | null = null;
 
   shellIdx = 0; // currently loaded / selected
   nextShellIdx = 0;
@@ -167,36 +187,51 @@ export class Tank {
   update(dt: number, now: number) {
     if (!this.alive) {
       this.speed = approach(this.speed, 0, 6 * dt);
-      this.pos.x += Math.cos(this.ang) * this.speed * dt;
-      this.pos.y += Math.sin(this.ang) * this.speed * dt;
+      const k = Math.exp(-4 * dt);
+      this.vel.x *= k;
+      this.vel.y *= k;
+      this.pos.x += this.vel.x * dt;
+      this.pos.y += this.vel.y * dt;
       return;
     }
     const sp = this.spec;
     const mobile = this.canMove();
     const pw = sp.hp / sp.weight;
-    const accel = clamp(0.19 * pw, 0.9, 3.4) * this.enginePower();
-    const vmax = this.maxSpeed() * (this.enginePower() < 1 ? 0.6 : 1);
+    const boosting = this.boostT > 0;
+    const accel = clamp(0.19 * pw, 0.9, 3.4) * this.enginePower() * (boosting ? 1.8 : 1);
+    const vmax = this.maxSpeed() * (this.enginePower() < 1 ? 0.6 : 1) * (boosting ? 1.3 : 1);
     const vrev = (sp.reverse / 3.6) * SPEED_SCALE;
     let target = 0;
-    if (mobile) target = this.throttle >= 0 ? this.throttle * vmax : this.throttle * vrev;
+    if (mobile && !this.handbrake) target = this.throttle >= 0 ? this.throttle * vmax : this.throttle * vrev;
     const braking = Math.sign(target) !== Math.sign(this.speed) && Math.abs(this.speed) > 0.1;
-    this.speed = approach(this.speed, target, (braking || target === 0 ? 5.5 : accel) * dt);
+    const decel = this.handbrake ? 14 : braking || target === 0 ? 5.5 : accel;
+    this.speed = approach(this.speed, target, decel * dt);
 
     // turning
     let turnRate: number;
     if (sp.look.wheels) {
       const minR = 6.5;
-      turnRate = Math.min(Math.abs(this.speed) / minR, 0.75) * Math.sign(this.speed || 1);
+      const fwdV = Math.abs(this.speed) + (this.handbrake ? Math.hypot(this.vel.x, this.vel.y) * 0.7 : 0);
+      turnRate = Math.min(fwdV / minR, this.handbrake ? 1.4 : 0.75) * Math.sign(this.speed || 1);
     } else {
       const base = clamp(16 + pw * 1.6, 22, 48) * DEG;
       turnRate = base * (1 - 0.4 * Math.min(1, Math.abs(this.speed) / Math.max(vmax, 1)));
-      if (this.speed < -0.2) turnRate *= 1; // keep stick direction consistent while reversing
+      // handbrake while moving: lock one track and swing the hull round (drift)
+      if (this.handbrake && Math.hypot(this.vel.x, this.vel.y) > 2) turnRate = base * 2.4;
     }
     const targetAV = mobile ? this.steer * turnRate * (this.enginePower() > 0 ? 1 : 0) : 0;
-    this.angVel = approach(this.angVel, targetAV, 3.5 * dt);
+    this.angVel = approach(this.angVel, targetAV, (this.handbrake ? 7 : 3.5) * dt);
     this.ang = angNorm(this.ang + this.angVel * dt);
-    this.pos.x += Math.cos(this.ang) * this.speed * dt;
-    this.pos.y += Math.sin(this.ang) * this.speed * dt;
+
+    // tracks grip: velocity follows the hull; with the handbrake + steering it slides (drift)
+    const dvx = Math.cos(this.ang) * this.speed;
+    const dvy = Math.sin(this.ang) * this.speed;
+    const grip = this.handbrake ? (Math.abs(this.steer) > 0.3 ? 1.7 : 9) : 14;
+    const kg = 1 - Math.exp(-grip * dt);
+    this.vel.x += (dvx - this.vel.x) * kg;
+    this.vel.y += (dvy - this.vel.y) * kg;
+    this.pos.x += this.vel.x * dt;
+    this.pos.y += this.vel.y * dt;
 
     // turret / gun traverse toward aim
     const rate = this.traverseRate() * dt;
@@ -218,10 +253,59 @@ export class Tank {
     this.recoil = Math.max(0, this.recoil - dt * 3.5);
     this.hitFlash = Math.max(0, this.hitFlash - dt);
     if (this.extinguishCd > 0) this.extinguishCd -= dt;
+    if (this.boostT > 0) this.boostT -= dt;
+    if (this.boostCd > 0) this.boostCd -= dt;
+    if (this.repairCd > 0) this.repairCd -= dt;
+    if (this.smokeCd > 0) this.smokeCd -= dt;
 
     this.updateCrew(dt);
-    this.updateRepairs(dt);
+    this.updateRepair(dt);
     void now;
+  }
+
+  // ---------------------------------------------------------------- abilities
+  static readonly BOOST_TIME = 4;
+  static readonly BOOST_CD = 20;
+  static readonly REPAIR_TIME = 6;
+  static readonly REPAIR_CD = 35;
+
+  /** Modules that a repair would fix. */
+  needsRepair(): boolean {
+    return this.mods.some((m) => (m.def.kind === 'track' || m.def.kind === 'engine' || m.def.kind === 'transmission' || m.def.kind === 'breech' || m.def.kind === 'barrel' || m.def.kind === 'fuel') && m.hp < m.def.maxHp * 0.7);
+  }
+  canBoost(): boolean {
+    return this.alive && this.boostCd <= 0 && this.canMove();
+  }
+  startBoost(): boolean {
+    if (!this.canBoost()) return false;
+    this.boostT = Tank.BOOST_TIME;
+    this.boostCd = Tank.BOOST_CD;
+    return true;
+  }
+  canRepair(): boolean {
+    return this.alive && this.repairCd <= 0 && this.repairT <= 0 && this.needsRepair() && this.crewAlive().length >= 2;
+  }
+  startRepair(): boolean {
+    if (!this.canRepair()) return false;
+    this.repairT = Tank.REPAIR_TIME;
+    return true;
+  }
+  canSmoke(): boolean {
+    return this.alive && this.smokeCharges > 0 && this.smokeCd <= 0;
+  }
+
+  private updateRepair(dt: number) {
+    if (this.repairT <= 0) return;
+    if (this.burning > 0) return; // crew is busy with the fire
+    this.repairT -= dt;
+    if (this.repairT <= 0) {
+      this.repairT = 0;
+      this.repairCd = Tank.REPAIR_CD;
+      for (const m of this.mods) {
+        const k = m.def.kind;
+        if (k === 'track' || k === 'engine' || k === 'transmission' || k === 'breech' || k === 'barrel' || k === 'fuel') m.hp = Math.max(m.hp, m.def.maxHp * 0.75);
+      }
+    }
   }
 
   /** Remaining traverse error between gun and aim (radians). */
@@ -292,23 +376,6 @@ export class Tank {
     if (this.crewSwap <= 0) {
       donor.role = role;
       this.pendingSwapRole = null;
-    }
-  }
-
-  private updateRepairs(dt: number) {
-    if (this.burning > 0) return;
-    if (this.crewAlive().length < 2) return;
-    for (const m of this.mods) {
-      const k = m.def.kind;
-      if (k === 'crew' || k === 'ammo' || k === 'fuel') continue;
-      if (m.hp <= 0) {
-        if (m.repair <= 0) m.repair = k === 'track' ? 9 : k === 'engine' ? 16 : k === 'transmission' ? 14 : 10;
-        m.repair -= dt;
-        if (m.repair <= 0) {
-          m.hp = m.def.maxHp * 0.5;
-          m.repair = 0;
-        }
-      }
     }
   }
 

@@ -157,20 +157,13 @@ export interface Prediction {
   label: string;
 }
 
-/** Evaluate one part (hull or turret) for the predictor. */
-function predictPart(target: Tank, shell: ShellSpec, from: V2, dir: V2, part: 'hull' | 'turret'): Prediction | null {
-  const far = { x: from.x + dir.x * 2500, y: from.y + dir.y * 2500 };
-  const hit = intersectTank(target, from, far, part === 'turret' ? 0 : 0.999, 1, true);
-  if (!hit || !hit.edge || hit.part !== part) return null;
-  const dist = hit.t * 2500;
-  const frameAng = hit.part === 'turret' ? target.turretWorldAng : target.ang;
-  const dl = dirToLocal(dir, frameAng);
-  const cosH = -(dl.x * hit.edge.n.x + dl.y * hit.edge.n.y);
-  const plate = plateFor(target, hit.edge.key);
+/** Outcome of a shell striking one armor edge at horizontal cosine `cosH` from `dist` metres. */
+function judgeEdge(target: Tank, shell: ShellSpec, edge: ArmorEdge, part: 'hull' | 'turret', cosH: number, dist: number): Prediction {
+  const plate = plateFor(target, edge.key);
   const e = effective(plate, cosH, shell);
   let pen = penAt(shell, dist);
-  if (hit.part === 'hull' && hit.edge.zone === 'side') pen -= trackAbsorb(target, cosH, shell);
-  const label = partLabel(target, hit.edge.key);
+  if (part === 'hull' && edge.zone === 'side') pen -= trackAbsorb(target, cosH, shell);
+  const label = partLabel(target, edge.key);
   if (shell.type === 'HE') {
     const cbrtE = Math.cbrt(Math.max(1, shell.explosive));
     if (pen >= e.eff || target.spec.armor.openTop || plate.t < cbrtE * 1.15) return { outcome: 'pen', eff: e.eff, pen, label };
@@ -180,6 +173,51 @@ function predictPart(target: Tank, shell: ShellSpec, from: V2, dir: V2, part: 'h
   if (pen >= e.eff * 1.08) return { outcome: 'pen', eff: e.eff, pen, label };
   if (pen >= e.eff * 0.9) return { outcome: 'maybe', eff: e.eff, pen, label };
   return { outcome: 'no', eff: e.eff, pen, label };
+}
+
+/** Evaluate one part (hull or turret) for the predictor. */
+function predictPart(target: Tank, shell: ShellSpec, from: V2, dir: V2, part: 'hull' | 'turret'): Prediction | null {
+  const far = { x: from.x + dir.x * 2500, y: from.y + dir.y * 2500 };
+  const hit = intersectTank(target, from, far, part === 'turret' ? 0 : 0.999, 1, true);
+  if (!hit || !hit.edge || hit.part !== part) return null;
+  const dist = hit.t * 2500;
+  const frameAng = hit.part === 'turret' ? target.turretWorldAng : target.ang;
+  const dl = dirToLocal(dir, frameAng);
+  const cosH = -(dl.x * hit.edge.n.x + dl.y * hit.edge.n.y);
+  return judgeEdge(target, shell, hit.edge, part, cosH, dist);
+}
+
+export interface PlateView {
+  a: V2; // world
+  b: V2;
+  n: V2; // world outward normal
+  outcome: Prediction['outcome'];
+  part: 'hull' | 'turret';
+}
+
+/**
+ * Weak-spot map: for every armor edge facing `from`, the expected result of a hit there with `shell`.
+ * Used by the aim overlay (green = penetrates, yellow = maybe, red = bounces / stopped).
+ */
+export function plateMap(target: Tank, shell: ShellSpec, from: V2): PlateView[] {
+  const out: PlateView[] = [];
+  const frames: Array<{ edges: ArmorEdge[]; pos: V2; ang: number; part: 'hull' | 'turret' }> = [{ edges: target.bp.hullEdges, pos: target.pos, ang: target.ang, part: 'hull' }];
+  if (!target.turretOff) frames.push({ edges: target.bp.turretEdges, pos: target.turretPos(), ang: target.turretWorldAng, part: 'turret' });
+  for (const f of frames) {
+    for (const e of f.edges) {
+      const a = toWorld(e.a, f.pos, f.ang);
+      const b = toWorld(e.b, f.pos, f.ang);
+      const mx = (a.x + b.x) / 2 - from.x;
+      const my = (a.y + b.y) / 2 - from.y;
+      const d = Math.hypot(mx, my) || 1;
+      const dl = dirToLocal({ x: mx / d, y: my / d }, f.ang);
+      const cosH = -(dl.x * e.n.x + dl.y * e.n.y);
+      if (cosH <= 0.03) continue; // facing away from the shooter
+      const pr = judgeEdge(target, shell, e, f.part, cosH, d);
+      out.push({ a, b, n: dirToWorld(e.n, f.ang), outcome: pr.outcome, part: f.part });
+    }
+  }
+  return out;
 }
 
 const RANK: Record<Prediction['outcome'], number> = { pen: 3, maybe: 2, no: 1, ricochet: 0, none: -1 };
@@ -550,6 +588,7 @@ function applyDamage(shooter: Tank | null, target: Tank, acc: Map<number, number
     target.damagers.set(shooter.id, performance.now() / 1000);
     target.lastHitBy = shooter;
   }
+  if (total > 0) target.lastHitTime = performance.now() / 1000;
   if (res.cookoff || target.knockedOut()) res.killed = true;
   res.states = snapshotStates(target);
   res.changed = Object.keys(res.states).filter((k) => res.states[k] !== res.prevStates[k]);

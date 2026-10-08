@@ -1,7 +1,7 @@
 // Renders a Battle: camera, map layers, tanks, projectiles, effects, fog of war, world overlays.
 
-import { type V2, clamp, dist, toWorld } from '../core/math';
-import { predictShot, type Prediction } from '../game/armor';
+import { type V2, DEG, angDiff, clamp, dist, toWorld } from '../core/math';
+import { plateMap, predictShot, type Prediction } from '../game/armor';
 import type { Battle } from '../game/battle';
 import { shellObstacleHit } from '../game/map';
 import type { Tank } from '../game/tank';
@@ -32,7 +32,9 @@ export class BattleRenderer {
   cam: V2;
   zoom = 5;
   baseZoom = 5;
-  zoomOut = false;
+  /** zoom steps relative to the default view: wide · normal · close · sniper */
+  static readonly ZOOMS = [0.6, 1, 1.6, 2.4];
+  zoomIdx = 1;
   spriteScale = 12;
   popups: Popup[] = [];
   fog: HTMLCanvasElement;
@@ -41,6 +43,8 @@ export class BattleRenderer {
   spectate: Tank | null = null;
   aimPrediction: Prediction | null = null;
   aimEnd: V2 | null = null;
+  /** while set the camera holds still (precision aiming by touching the battlefield) */
+  camLock: V2 | null = null;
   shake = 0;
   private chunkBudget = { n: 2 };
 
@@ -69,10 +73,21 @@ export class BattleRenderer {
     this.canvas.width = Math.round(this.W * this.dpr);
     this.canvas.height = Math.round(this.H * this.dpr);
     this.baseZoom = this.H / 64;
-    this.zoom = this.zoomOut ? this.H / 115 : this.baseZoom;
+    this.zoom = this.baseZoom * this.zoomMul;
     this.spriteScale = clamp(Math.ceil(this.baseZoom * this.dpr * 1.3), 6, 22);
     this.fog.width = Math.ceil(this.W / 2);
     this.fog.height = Math.ceil(this.H / 2);
+  }
+
+  get zoomMul(): number {
+    return BattleRenderer.ZOOMS[this.zoomIdx];
+  }
+  /** Step the zoom level (+1 = closer). Returns true when it changed. */
+  zoomStep(d: number): boolean {
+    const i = clamp(this.zoomIdx + d, 0, BattleRenderer.ZOOMS.length - 1);
+    if (i === this.zoomIdx) return false;
+    this.zoomIdx = i;
+    return true;
   }
 
   toScreen(p: V2): V2 {
@@ -103,13 +118,32 @@ export class BattleRenderer {
     const b = this.b;
     const ctx = this.ctx;
     const f = this.focus();
-    const tz = this.zoomOut ? this.H / 115 : this.baseZoom;
+    const tz = this.baseZoom * this.zoomMul;
     this.zoom += (tz - this.zoom) * (1 - Math.exp(-dt * 6));
     if (f) {
-      const look = f.alive ? (this.W / this.zoom) * 0.2 : 0;
-      const tx = f.pos.x + Math.cos(f.gunWorldAng) * look;
-      const ty = f.pos.y + Math.sin(f.gunWorldAng) * look;
-      const k = 1 - Math.exp(-dt * 3.5);
+      let look = f.alive ? (this.W / this.zoom) * 0.2 : 0;
+      const zk = clamp((this.zoomMul - 1) / 1.4, 0, 1);
+      if (f.alive && f === b.player && zk > 0) {
+        // zoomed in: the view slides out along the gun like a gun sight — to the enemy nearest the
+        // line of fire, otherwise to whatever the gun points at
+        let ad = this.aimEnd ? Math.min(dist(f.pos, this.aimEnd), 240) : 60;
+        let best = 12 * DEG;
+        for (const e of b.tanks) {
+          if (!e.alive || e.team === f.team || !b.isSpotted(f.team, e)) continue;
+          const d = dist(f.pos, e.pos);
+          if (d > 240) continue;
+          const da = Math.abs(angDiff(f.gunWorldAng, Math.atan2(e.pos.y - f.pos.y, e.pos.x - f.pos.x)));
+          if (da < best) {
+            best = da;
+            ad = d;
+          }
+        }
+        const half = Math.min(this.W, this.H) / this.zoom / 2;
+        look += (Math.max(look, ad - half * 0.2) - look) * zk;
+      }
+      const tx = this.camLock ? this.camLock.x : f.pos.x + Math.cos(f.gunWorldAng) * look;
+      const ty = this.camLock ? this.camLock.y : f.pos.y + Math.sin(f.gunWorldAng) * look;
+      const k = 1 - Math.exp(-dt * (zk > 0 ? 5 : 3.5));
       this.cam.x += (tx - this.cam.x) * k;
       this.cam.y += (ty - this.cam.y) * k;
       // keep the view mostly inside the map
@@ -167,6 +201,8 @@ export class BattleRenderer {
     for (const t of visible) if (t.turretOff && t.turretOff.h > 0) this.drawFlyingTurret(ctx, t);
     this.mapR.drawTrees(ctx, x0, y0, x1, y1, b.player && b.player.alive ? b.player.pos : null);
     b.fx.draw(ctx, true, x0, y0, x1, y1);
+    this.drawGrenades(ctx);
+    b.fx.drawSmokeClouds(ctx, b.map.smokes, x0, y0, x1, y1);
 
     // fog of war outside the player's vision polygon
     if (b.player && b.player.alive && b.visionPoly.length > 2) this.drawFog(ctx);
@@ -335,6 +371,44 @@ export class BattleRenderer {
     ctx.restore();
   }
 
+  private drawGrenades(ctx: Ctx) {
+    for (const g of this.b.grenades) {
+      const k = Math.min(1, g.t / g.T);
+      const x = g.x0 + (g.x1 - g.x0) * k;
+      const y = g.y0 + (g.y1 - g.y0) * k;
+      const h = Math.sin(k * Math.PI) * 6;
+      ctx.fillStyle = 'rgba(0,0,0,0.25)';
+      ctx.beginPath();
+      ctx.arc(x - h * 0.3, y + h * 0.35, 0.25, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#3d4130';
+      ctx.beginPath();
+      ctx.arc(x, y - h * 0.1, 0.22 + h * 0.02, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(220,220,210,0.35)';
+      ctx.beginPath();
+      ctx.arc(x - (g.x1 - g.x0) * 0.02, y - (g.y1 - g.y0) * 0.02, 0.35, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  private drawPlates(ctx: Ctx, t: Tank, shell: Tank['spec']['gun']['shells'][number], from: V2, alpha: number) {
+    const pv = plateMap(t, shell, from);
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.globalAlpha = alpha;
+    for (const pl of pv) {
+      const o = pl.part === 'turret' ? 0.14 : 0.26;
+      ctx.strokeStyle = predColor(pl.outcome);
+      ctx.lineWidth = pl.part === 'turret' ? 0.24 : 0.3;
+      ctx.beginPath();
+      ctx.moveTo(pl.a.x + pl.n.x * o, pl.a.y + pl.n.y * o);
+      ctx.lineTo(pl.b.x + pl.n.x * o, pl.b.y + pl.n.y * o);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   private drawFog(ctx: Ctx) {
     const fc = this.fogCtx;
     const fw = this.fog.width;
@@ -397,6 +471,13 @@ export class BattleRenderer {
       }
       end = { x: m.x + d.x * tgtD, y: m.y + d.y * tgtD };
       this.aimEnd = end;
+      // weak-spot overlay: the target under the sight, or every visible enemy when zoomed in
+      const shell = p.spec.gun.shells[p.shellIdx];
+      for (const e of b.tanks) {
+        if (!e.alive || e.team === p.team || !b.isSpotted(p.team, e)) continue;
+        if (e !== tgt && (this.zoomMul < 1.3 || dist(e.pos, this.cam) > (this.W / z) * 0.6)) continue;
+        this.drawPlates(ctx, e, shell, m, e === tgt ? 0.9 : 0.6);
+      }
       ctx.setLineDash([1.2, 1.4]);
       ctx.strokeStyle = 'rgba(255,255,240,0.32)';
       ctx.lineWidth = 0.16;
@@ -440,28 +521,30 @@ export class BattleRenderer {
         const aa = (i * Math.PI) / 2;
         ctx.fillRect(end.x + Math.cos(aa) * (rr + 0.2) - 0.12, end.y + Math.sin(aa) * (rr + 0.2) - 0.12, 0.24, 0.24);
       }
-      void tgt;
     }
 
-    // tank markers
+    // tank markers (kept at a roughly constant screen size across zoom levels)
+    const mk = clamp(this.baseZoom / z, 0.42, 1.8);
     for (const t of b.tanks) {
       if (!t.alive || t.isPlayer) continue;
       const friend = t.team === b.playerTeam;
       if (!friend && !b.isSpotted(b.playerTeam, t)) continue;
       const col = friend ? TEAM_COL.friend : TEAM_COL.enemy;
-      const y = t.pos.y - t.bp.radius - 2.2;
+      const y = t.pos.y - t.bp.radius - 1.2 - mk;
       ctx.fillStyle = col;
       ctx.beginPath();
-      ctx.moveTo(t.pos.x - 0.9, y - 0.8);
-      ctx.lineTo(t.pos.x + 0.9, y - 0.8);
-      ctx.lineTo(t.pos.x, y + 0.4);
+      ctx.moveTo(t.pos.x - 0.9 * mk, y - 0.8 * mk);
+      ctx.lineTo(t.pos.x + 0.9 * mk, y - 0.8 * mk);
+      ctx.lineTo(t.pos.x, y + 0.4 * mk);
       ctx.closePath();
       ctx.fill();
-      if (!friend && p && dist(p.pos, t.pos) < 260) {
-        ctx.font = '600 1.7px "Barlow Condensed", sans-serif';
+      // labels: vehicle for spotted enemies, player names for other humans
+      const label = !friend && p && dist(p.pos, t.pos) < 260 ? (t.slot ? `${t.name} · ${t.spec.name}` : t.spec.name) : friend && t.slot ? t.name : null;
+      if (label) {
+        ctx.font = `600 ${1.7 * mk}px "Barlow Condensed", sans-serif`;
         ctx.textAlign = 'center';
-        ctx.fillStyle = 'rgba(255,190,180,0.85)';
-        ctx.fillText(t.spec.name, t.pos.x, y - 1.3);
+        ctx.fillStyle = friend ? 'rgba(190,215,255,0.9)' : 'rgba(255,190,180,0.85)';
+        ctx.fillText(label, t.pos.x, y - 1.3 * mk);
       }
     }
 

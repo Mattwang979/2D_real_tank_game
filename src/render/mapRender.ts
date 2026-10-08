@@ -23,6 +23,8 @@ export interface Decal {
   w: number;
   h: number;
   seed?: number;
+  /** alpha multiplier */
+  a?: number;
 }
 
 interface ChunkRec {
@@ -539,7 +541,7 @@ export class MapRenderer {
         ctx.save();
         ctx.translate(d.x, d.y);
         ctx.rotate(d.ang);
-        ctx.globalAlpha = th.trackA;
+        ctx.globalAlpha = Math.min(0.9, th.trackA * (d.a ?? 1));
         ctx.fillStyle = th.track;
         ctx.fillRect(-d.w / 2, -d.h / 2, d.w, d.h);
         ctx.restore();

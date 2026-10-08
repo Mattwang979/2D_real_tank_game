@@ -72,6 +72,23 @@ export interface Decor {
   seed: number;
 }
 
+export interface SmokeCloud {
+  id: number;
+  x: number;
+  y: number;
+  r: number;
+  rMax: number;
+  age: number;
+  life: number;
+  team: 0 | 1;
+}
+
+/** Effective (vision-blocking) radius of a smoke cloud, 0 once it thins out. */
+export function smokeRadius(s: SmokeCloud): number {
+  if (s.age > s.life - 2) return 0;
+  return s.r * 0.85;
+}
+
 export interface MapDef {
   id: string;
   name: string;
@@ -97,6 +114,7 @@ export interface GameMap {
   shadow: V2; // shadow offset direction per meter of height
   grid: SpatialGrid;
   occluders: Array<{ a: V2; b: V2 }>; // vision blocking segments
+  smokes: SmokeCloud[]; // runtime smoke screens
 }
 
 export const MAPS: MapDef[] = [
@@ -128,8 +146,13 @@ export class SpatialGrid {
   }
   query(x0: number, y0: number, x1: number, y1: number, out: Set<Obs> = new Set()): Set<Obs> {
     const c = this.cell;
-    for (let cy = Math.floor(y0 / c); cy <= Math.floor(y1 / c); cy++)
-      for (let cx = Math.floor(x0 / c); cx <= Math.floor(x1 / c); cx++) for (const o of this.cells[this.idx(cx, cy)]) out.add(o);
+    const n = this.n - 1;
+    // clamp to the grid (also guards against NaN / infinite coordinates)
+    const cx0 = clamp(Math.floor(x0 / c), 0, n);
+    const cx1 = clamp(Math.floor(x1 / c), 0, n);
+    const cy0 = clamp(Math.floor(y0 / c), 0, n);
+    const cy1 = clamp(Math.floor(y1 / c), 0, n);
+    for (let cy = cy0; cy <= cy1; cy++) for (let cx = cx0; cx <= cx1; cx++) for (const o of this.cells[cy * this.n + cx]) out.add(o);
     return out;
   }
 }
@@ -189,6 +212,7 @@ class Builder {
       shadow: { x: -0.5, y: 0.62 },
       grid: new SpatialGrid(sz),
       occluders: [],
+      smokes: [],
     };
   }
   roadDist(x: number, y: number): number {
@@ -619,8 +643,22 @@ export function buildMap(def: MapDef, seed = 1234): GameMap {
 // ---------------------------------------------------------------------------
 // Queries
 
-/** Is the straight line a→b blocked for vision / shells by buildings or big rocks? */
+/** Does a smoke screen block the view along a→b? */
+export function smokeBlocks(m: GameMap, a: V2, b: V2): boolean {
+  if (!m.smokes.length) return false;
+  const L = Math.hypot(b.x - a.x, b.y - a.y);
+  if (L < 8) return false;
+  for (const s of m.smokes) {
+    const re = smokeRadius(s);
+    if (re < 1.5) continue;
+    if (pointSegDist({ x: s.x, y: s.y }, a, b) < re) return true;
+  }
+  return false;
+}
+
+/** Is the straight line a→b blocked for vision by buildings, big rocks or smoke? */
 export function losBlocked(m: GameMap, a: V2, b: V2): boolean {
+  if (smokeBlocks(m, a, b)) return true;
   const x0 = Math.min(a.x, b.x);
   const y0 = Math.min(a.y, b.y);
   const x1 = Math.max(a.x, b.x);
@@ -693,13 +731,21 @@ export function collideStatic(m: GameMap, poly: V2[], center: V2, radius: number
       if (mtv) out.push({ nx: -mtv.x, ny: -mtv.y, depth: mtv.depth, tree: o.o });
     }
   }
-  // map bounds
+  // map bounds (one contact per side, by the deepest corner)
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
   for (const p of poly) {
-    if (p.x < 0) out.push({ nx: 1, ny: 0, depth: -p.x });
-    if (p.y < 0) out.push({ nx: 0, ny: 1, depth: -p.y });
-    if (p.x > m.size) out.push({ nx: -1, ny: 0, depth: p.x - m.size });
-    if (p.y > m.size) out.push({ nx: 0, ny: -1, depth: p.y - m.size });
+    x0 = Math.min(x0, p.x);
+    y0 = Math.min(y0, p.y);
+    x1 = Math.max(x1, p.x);
+    y1 = Math.max(y1, p.y);
   }
+  if (x0 < 0) out.push({ nx: 1, ny: 0, depth: -x0 });
+  if (y0 < 0) out.push({ nx: 0, ny: 1, depth: -y0 });
+  if (x1 > m.size) out.push({ nx: -1, ny: 0, depth: x1 - m.size });
+  if (y1 > m.size) out.push({ nx: 0, ny: -1, depth: y1 - m.size });
 }
 
 /** Is a point under tree canopy (concealment)? */

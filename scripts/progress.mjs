@@ -22,7 +22,7 @@ await page.waitForTimeout(300);
 await page.evaluate(() => { window.__pen.save().settings.map = 'city'; });
 await page.evaluate(() => window.__pen.startBattle());
 await page.waitForTimeout(1500);
-await page.evaluate(() => { const b = window.__pen.battle; for (let i = 0; i < 12; i++) b.addReward('Target destroyed', 330, 1650); b.stats.kills = 12; b.end('victory'); });
+await page.evaluate(() => { const b = window.__pen.battle; for (let i = 0; i < 12; i++) b.addReward(b.local, 'Target destroyed', 330, 1650); b.stats.kills = 12; b.end('victory'); });
 await page.waitForTimeout(4200);
 await page.screenshot({ path: `${out}/p2_results.png` });
 const s1 = await page.evaluate(() => { const s = window.__pen.save(); return { researched: s.researched, researching: s.researching, rpFree: s.rpFree, credits: s.credits }; });

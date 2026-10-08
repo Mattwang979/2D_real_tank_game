@@ -31,7 +31,7 @@ const res = await page.evaluate(async (secs) => {
       if (ev.type === 'feed') log.push(`${b.time.toFixed(0)}s ${ev.killer ? ev.killer.team + ':' + ev.killer.spec.id : '-'} -> ${ev.victim.team}:${ev.victim.spec.id} (${ev.how})`);
       if (ev.type === 'hit') { const k = ev.res.outcome + (ev.res.outcome === 'pen' ? (ev.res.damage > 0 ? '+dmg' : '-nodmg') : ''); out[k] = (out[k] || 0) + 1; dists.push(Math.round(Math.hypot(ev.shooter.pos.x - ev.target.pos.x, ev.shooter.pos.y - ev.target.pos.y))); }
       if (ev.type === 'captured') log.push(`${b.time.toFixed(0)}s CAPTURED by ${ev.team}`);
-      if (ev.type === 'playerDead') { log.push(`${b.time.toFixed(0)}s PLAYER DEAD`); const av = b.availableLineup(); if (av.length) { b.deadAt = -10; b.respawnPlayer(av[0].id); log.push('respawn ' + av[0].id); } }
+      if (ev.type === 'playerDead') { log.push(`${b.time.toFixed(0)}s PLAYER DEAD`); const av = b.availableLineup(); if (av.length) { b.local.deadAt = -10; b.respawnPlayer(av[0].id); log.push('respawn ' + av[0].id); } }
     }
     b.events.length = 0;
     if (b.state === 'ended') break;
