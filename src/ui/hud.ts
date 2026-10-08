@@ -141,6 +141,9 @@ export class Hud {
   private onDown = (e: PointerEvent) => {
     e.preventDefault();
     audio.unlock();
+    this.pressed.delete(e.pointerId);
+    if (this.move?.id === e.pointerId) this.move = null;
+    if (this.aim?.id === e.pointerId) this.aim = null;
     const p = this.pt(e);
     this.layout();
     const btn = this.hitButton(p.x, p.y);
@@ -932,6 +935,29 @@ export class Hud {
     const b = this.b;
     const d = this.deathInfo;
     const t = d?.t ?? 0;
+    const spectating = b.availableLineup().length === 0 && t > 4;
+    if (spectating) {
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.font = '600 14px "Barlow Condensed", sans-serif';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+      const msg = tr('No vehicles left — spectating');
+      ctx.strokeText(msg, W / 2, H - s.b - 70);
+      ctx.fillStyle = '#e6e6dc';
+      ctx.fillText(msg, W / 2, H - s.b - 70);
+      for (const bt of this.buttons) {
+        if (bt.id !== 'leave') continue;
+        ctx.fillStyle = 'rgba(60,30,26,0.85)';
+        roundRect(ctx, bt.x, bt.y, bt.w!, bt.h!, 5);
+        ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.font = '600 13px "Barlow Condensed", sans-serif';
+        ctx.fillText(tr('Leave battle'), bt.x + bt.w! / 2, bt.y + bt.h! / 2 + 1);
+      }
+      ctx.restore();
+      return;
+    }
     ctx.save();
     ctx.fillStyle = `rgba(8,8,8,${Math.min(0.55, t * 0.5)})`;
     ctx.fillRect(0, 0, W, H);

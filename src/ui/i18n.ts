@@ -29,6 +29,7 @@ const ZH: Record<string, string> = {
   BURNING: '起火中',
   SPOTTED: '被發現',
   DOMINATION: '據點爭奪',
+  'Graphics: Low (auto)': '畫質：低（自動）',
   'Capture and hold point A': '佔領並守住 A 點',
   'The enemy has been defeated': '敵軍已被擊潰',
   'Your team has been defeated': '我方已被擊潰',

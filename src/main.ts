@@ -123,10 +123,21 @@ async function startBattle() {
   audio.engineStart();
   loading.style.display = 'none';
   let last = performance.now();
+  let slow = 0;
   const frame = (now: number) => {
     if (battle !== b) return;
-    const dt = Math.min(0.05, (now - last) / 1000);
+    const raw = (now - last) / 1000;
+    const dt = Math.min(0.05, raw);
     last = now;
+    // automatic quality fallback when the device can't keep ~40 fps
+    if (!paused && r.quality === 'high' && raw < 0.5) {
+      slow = raw > 1 / 38 ? slow + raw : Math.max(0, slow - raw * 0.5);
+      if (slow > 4) {
+        r.quality = 'low';
+        r.resize();
+        hd.handle({ type: 'notice', text: 'Graphics: Low (auto)', color: '#9fd3ff' });
+      }
+    }
     if (!paused) {
       hd.update(dt);
       const steps = dt > 1 / 45 ? 2 : 1;

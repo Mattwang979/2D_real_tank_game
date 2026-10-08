@@ -90,13 +90,13 @@ export class BattleRenderer {
 
   focus(): Tank | null {
     const b = this.b;
-    if (b.player && (b.player.alive || b.state !== 'playing')) {
-      if (b.player.alive || b.time - b.player.deathTime < 3 || !this.spectate) return b.player;
-    }
-    if (!this.spectate || !this.spectate.alive) {
-      this.spectate = b.tanks.find((t) => t.alive && t.team === b.playerTeam) ?? null;
-    }
-    return this.spectate ?? b.player;
+    const p = b.player;
+    if (p && p.alive) return p;
+    const choosing = b.state === 'dead' && b.availableLineup().length > 0;
+    if (p && (b.time - p.deathTime < 3 || choosing)) return p;
+    // spectate a living teammate
+    if (!this.spectate || !this.spectate.alive) this.spectate = b.tanks.find((t) => t.alive && t.team === b.playerTeam) ?? null;
+    return this.spectate ?? p;
   }
 
   render(dt: number) {
