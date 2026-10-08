@@ -162,6 +162,11 @@ const hf0 = await host.evaluate(() => window.__pen.battle.flares.length);
 await client.evaluate(() => window.__pen.hud.controls.flare(0.5));
 check('client flare on both', (await waitFor(host, (n) => window.__pen.battle.flares.length > n, hf0, 4000)) && (await waitFor(client, () => window.__pen.battle.flares.some((f) => f.team === window.__pen.battle.playerTeam), null, 4000)));
 check('client flare charges synced', await waitFor(client, () => window.__pen.battle.player.flareCharges === 1, null, 3000));
+// team radio from the client: the host relays it to the team, AI teammates answer
+await client.evaluate(() => window.__pen.hud.sendRadio(0));
+check('client radio heard by the host', await waitFor(host, () => window.__pen.hud.feed.some((f) => f.radio && f.text.includes('Cli') && f.text.includes('Attack')), null, 4000));
+check('client sees its own radio call + ping', await waitFor(client, () => window.__pen.hud.feed.some((f) => f.radio && f.text.includes('Attack')) && window.__pen.hud.pings.some((p) => p.kind === 'attack'), null, 4000));
+check('AI answers the client', await waitFor(client, () => window.__pen.hud.feed.some((f) => f.radio && f.text.includes('Affirmative')), null, 5000));
 
 // kill the client's tank on the host → death screen → respawn
 await host.evaluate(() => {

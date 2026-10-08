@@ -8,6 +8,7 @@ import type { Battle } from './battle';
 import type { Carrier } from './carrier';
 import type { Tank } from './tank';
 import { FLARE, flareLight } from './weather';
+import type { RadioOrder } from './radio';
 
 type Role = 'capper' | 'support' | 'flank';
 
@@ -37,6 +38,8 @@ export class AIController {
   private flareAt = 0;
   /** optional detour waypoint taken before heading to the goal (flanking routes) */
   via: V2 | null = null;
+  /** a player's radio order being carried out: go to / stay near `pos` (or follow `who`) until `until` */
+  order: { kind: 'goto' | 'follow'; pos: V2; who: Tank | null; until: number } | null = null;
   private usedVia = false;
 
   constructor(tank: Tank, b: Battle, role: Role) {
@@ -46,6 +49,41 @@ export class AIController {
     this.skill = rand.range(0.35, 0.8);
     this.lastPos = { ...tank.pos };
     this.repath = rand.range(0, 1);
+  }
+
+  /** A player's radio command. */
+  giveOrder(kind: RadioOrder, at: V2, from: Tank, now: number) {
+    this.via = null;
+    if (kind === 'attack') {
+      this.order = null;
+      this.role = 'capper';
+    } else if (kind === 'defend') {
+      this.order = null;
+      this.role = this.role === 'flank' ? 'flank' : 'support';
+    } else if (kind === 'follow') {
+      this.order = { kind: 'follow', pos: { ...at }, who: from, until: now + 45 };
+    } else {
+      this.order = { kind: 'goto', pos: { ...at }, who: null, until: now + 30 };
+    }
+    this.repath = 0;
+    this.goal = null;
+  }
+
+  /** Head for the ordered spot (or slot in behind the tank we follow). */
+  private followOrder() {
+    const b = this.b;
+    const t = this.tank;
+    const o = this.order!;
+    let p = o.pos;
+    if (o.kind === 'follow' && o.who && o.who.alive) {
+      const w = o.who;
+      const side = (t.id % 2 ? 1 : -1) * 7;
+      p = toWorld({ x: -14, y: side }, w.pos, w.ang);
+    }
+    const S = b.map.size;
+    const goal = { x: clamp(p.x + rand.range(-5, 5), 8, S - 8), y: clamp(p.y + rand.range(-5, 5), 8, S - 8) };
+    this.goal = goal;
+    this.path = b.nav!.findPath(t.pos, goal) ?? [goal];
   }
 
   private chooseGoal() {
@@ -249,10 +287,15 @@ export class AIController {
       this.pickTarget(now);
       if (this.target && rand.chance(0.15)) this.chooseAimPoint(this.target);
     }
+    if (this.order && (now > this.order.until || (this.order.kind === 'follow' && !this.order.who?.alive))) {
+      this.order = null;
+      this.repath = 0;
+    }
     this.repath -= dt;
-    if (this.repath <= 0 || !this.goal) {
-      this.repath = rand.range(5, 9);
-      if (this.via) {
+    if (this.repath <= 0 || (!this.goal && !this.order)) {
+      this.repath = this.order ? (this.order.kind === 'follow' ? 2 : 4) : rand.range(5, 9);
+      if (this.order) this.followOrder();
+      else if (this.via) {
         this.path = b.nav!.findPath(t.pos, this.via) ?? [this.via];
       } else this.chooseGoal();
     }

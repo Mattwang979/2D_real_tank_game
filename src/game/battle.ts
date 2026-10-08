@@ -18,6 +18,7 @@ import { ARTY, ARTY_EVERY, ARTY_SHELL, type ArtyStrike, RECON_EVERY, RECON_TIME,
 import { Tank } from './tank';
 import { canSee, visibilityPolygon } from './vision';
 import { FLARE, type Flare, flareDone, inFlareLight, isWeatherId, type WeatherDef, type WeatherId, WEATHERS } from './weather';
+import { RADIO, RADIO_GAP, radioIndex } from './radio';
 
 export interface Projectile {
   id: number;
@@ -47,6 +48,8 @@ export type BattleEvent =
   | { type: 'notice'; text: string; color?: string; to?: string; team?: 0 | 1 }
   | { type: 'captured'; team: 0 | 1 }
   | { type: 'playerDead'; killer: Tank | null; res: ImpactResult | null; to?: string }
+  /** team radio: quick command `cmd` (index in RADIO) with an optional map ping */
+  | { type: 'radio'; from: Tank | null; name: string; team: 0 | 1; cmd: number; x?: number; y?: number }
   | { type: 'end' };
 
 /** Compact effect events mirrored from host to clients. */
@@ -191,6 +194,10 @@ export class Battle {
   private flareId = 1;
   /** tanks standing out in the dark (under a flare or on fire), refreshed with spotting */
   lit = new Set<number>();
+  /** AI radio replies waiting to be said */
+  private radioQueue: Array<{ at: number; t: Tank; cmd: number }> = [];
+  /** last AI-initiated callout per team */
+  private aiCallAt: [number, number] = [-99, -99];
   battleBR: number;
   enemyPool: VehicleSpec[];
 
@@ -454,6 +461,49 @@ export class Battle {
   fxFlare(f: Flare) {
     audio.flare(this.listenerDist({ x: f.x0, y: f.y0 }));
     this.netOut?.push({ k: 'flr', id: f.id, tm: f.team, x0: r2(f.x0), y0: r2(f.y0), x1: r2(f.x1), y1: r2(f.y1) });
+  }
+
+  /**
+   * Team radio call from tank `t`: command `cmd` (index in RADIO). `x, y` is the ping for commands that
+   * point at a spot (gun aim / minimap). Human calls also give orders to the AI teammates.
+   */
+  radio(t: Tank, cmd: number, x?: number, y?: number): boolean {
+    const c = RADIO[cmd];
+    if (this.mode === 'replica' || !c || this.time - t.radioAt < RADIO_GAP) return false;
+    t.radioAt = this.time;
+    const S = this.map.size;
+    let at: V2 | undefined;
+    if (c.ping === 'cap') at = { x: this.map.capture.x, y: this.map.capture.y };
+    else if (c.ping === 'self') at = { ...t.pos };
+    else if (c.ping) {
+      if (x === undefined || y === undefined || !Number.isFinite(x) || !Number.isFinite(y)) return false;
+      at = { x: clamp(x, 0, S), y: clamp(y, 0, S) };
+    }
+    this.emit({ type: 'radio', from: t, name: t.name, team: t.team, cmd, x: at?.x, y: at?.y });
+    if (t.slot && c.order && at) this.orderAI(t, c.order, at);
+    return true;
+  }
+
+  /** AI teammates act on a player's radio command; one of them answers. */
+  private orderAI(from: Tank, kind: NonNullable<(typeof RADIO)[number]['order']>, at: V2) {
+    const mates = [...this.ais.values()].filter((a) => a.tank.alive && a.tank.team === from.team && a.tank !== from);
+    if (!mates.length) return;
+    mates.sort((a, b) => dist(a.tank.pos, at) - dist(b.tank.pos, at));
+    let chosen = mates;
+    if (kind === 'help' || kind === 'follow' || kind === 'goto') chosen = mates.slice(0, 2);
+    else chosen = mates.filter(() => rand.chance(0.7));
+    if (!chosen.length) chosen = [mates[0]];
+    for (const a of chosen) a.giveOrder(kind, at, from, this.time);
+    const who = chosen[Math.floor(rand.next() * chosen.length)].tank;
+    const reply = kind === 'help' || kind === 'follow' || kind === 'goto' ? radioIndex('omw') : radioIndex('yes');
+    this.radioQueue.push({ at: this.time + rand.range(0.9, 1.8), t: who, cmd: reply });
+  }
+
+  private updateRadio() {
+    if (!this.radioQueue.length) return;
+    const due = this.radioQueue.filter((q) => this.time >= q.at);
+    this.radioQueue = this.radioQueue.filter((q) => this.time < q.at);
+    for (const q of due) if (q.t.alive) this.radio(q.t, q.cmd);
   }
 
   private updateFlares(dt: number) {
@@ -722,6 +772,7 @@ export class Battle {
     this.updateCarriers(dt);
     this.updateSupport(dt);
     this.updateFlares(dt);
+    this.updateRadio();
 
     // queued shots (fire button released while reloading / turret still traversing)
     for (const t of this.tanks) {
@@ -1437,6 +1488,11 @@ export class Battle {
         for (const v of this.tanks) {
           if (!v.alive || v.team !== team) continue;
           if (canSee(this.map, v, e, now, this.lit.has(e.id))) {
+            // an AI crew calls out a fresh contact (now and then, so the radio stays readable)
+            if (!v.slot && now - e.lastSeenAt > 30 && now - this.aiCallAt[team] > 25 && now > 8 && this.slots.some((s) => s.team === team && s.connected)) {
+              this.aiCallAt[team] = now;
+              this.radio(v, radioIndex('enemy'), e.pos.x, e.pos.y);
+            }
             set.add(e.id);
             e.lastSeenPos = { ...e.pos };
             e.lastSeenAt = now;

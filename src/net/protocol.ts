@@ -82,7 +82,8 @@ export type NetEvent =
   | { e: 'feed'; k: number | null; v: number; h: string }
   | { e: 'note'; tx: string; c?: string; tm?: 0 | 1 }
   | { e: 'cap'; tm: 0 | 1 }
-  | { e: 'dead'; k: number | null; r: ImpactResult | null };
+  | { e: 'dead'; k: number | null; r: ImpactResult | null }
+  | { e: 'rad'; f: number | null; n: string; c: number; x?: number; y?: number };
 
 export type HostMsg =
   | { t: 'welcome'; key: string }
@@ -105,6 +106,7 @@ export type ClientMsg =
   | { t: 'act'; a: 'shell'; i: number }
   | { t: 'act'; a: 'smoke'; ang: number }
   | { t: 'act'; a: 'flare'; ang: number }
+  | { t: 'act'; a: 'cmd'; c: number; x?: number; y?: number }
   | { t: 'act'; a: 'spawn'; id: string }
   | { t: 'ping'; c: number }
   | { t: 'leave' };

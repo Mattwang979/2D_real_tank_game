@@ -300,6 +300,7 @@ class HostGame implements NetSession {
         else if (m.a === 'shell') b.selectShell(t, Number(m.i) | 0);
         else if (m.a === 'smoke') b.useSmoke(t, Number(m.ang));
         else if (m.a === 'flare') b.useFlare(t, Number(m.ang));
+        else if (m.a === 'cmd') b.radio(t, Number(m.c) | 0, m.x === undefined ? undefined : Number(m.x), m.y === undefined ? undefined : Number(m.y));
         else if (m.a === 'boost') b.useBoost(t);
         else if (m.a === 'repair') b.useRepair(t);
         else if (m.a === 'crew') b.useCrew(t);
@@ -378,6 +379,11 @@ class HostGame implements NetSession {
         case 'playerDead':
           if (ev.to) this.queue(ev.to, { e: 'dead', k: ev.killer?.id ?? null, r: ev.res ? packRes(ev.res) : null });
           break;
+        case 'radio': {
+          const ne: NetEvent = { e: 'rad', f: ev.from?.id ?? null, n: ev.name, c: ev.cmd, x: ev.x === undefined ? undefined : r2(ev.x), y: ev.y === undefined ? undefined : r2(ev.y) };
+          for (const s of b.slots) if (s.team === ev.team) this.queue(s.key, ne);
+          break;
+        }
       }
     }
     const fx: NetFx[] = b.netOut ? b.netOut.splice(0) : [];
@@ -694,6 +700,7 @@ export class ClientGame implements NetSession {
       boost: () => act({ t: 'act', a: 'boost' }),
       repair: () => act({ t: 'act', a: 'repair' }),
       crew: () => act({ t: 'act', a: 'crew' }),
+      radio: (c, x, y) => act({ t: 'act', a: 'cmd', c, x: x === undefined ? undefined : r2(x), y: y === undefined ? undefined : r2(y) }),
       recon: () => act({ t: 'act', a: 'recon' }),
       arty: (x, y) => act({ t: 'act', a: 'arty', x: r2(x), y: r2(y) }),
       respawn: (id) => act({ t: 'act', a: 'spawn', id }),
@@ -901,6 +908,8 @@ export class ClientGame implements NetSession {
         return { type: 'captured', team: e.tm };
       case 'dead':
         return { type: 'playerDead', killer: this.tank(e.k), res: e.r };
+      case 'rad':
+        return { type: 'radio', from: this.tank(e.f), name: String(e.n ?? ''), team: this.b.playerTeam, cmd: Number(e.c) | 0, x: e.x, y: e.y };
     }
     return null;
   }

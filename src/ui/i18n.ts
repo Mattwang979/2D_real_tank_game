@@ -251,6 +251,28 @@ const ZH: Record<string, string> = {
   'Darkness · gun flashes give you away · flares': '一片漆黑 · 開砲火光會暴露位置 · 可用照明彈',
   FLARE: '照明彈',
   'No flares left': '照明彈用完了',
+  // radio
+  'Attack point A!': '進攻 A 點！',
+  'Defend point A!': '防守 A 點！',
+  'I need help!': '我需要支援！',
+  'Enemy spotted there!': '那裡有敵人！',
+  'Follow me!': '跟我來！',
+  'Affirmative!': '收到！',
+  'Negative!': '不行！',
+  'Thanks!': '謝了！',
+  'Look here!': '注意這裡！',
+  'On my way!': '馬上到！',
+  'Attack A': '進攻 A 點',
+  'Defend A': '防守 A 點',
+  'Help me': '支援我',
+  'Enemy there': '那裡有敵人',
+  'Follow me': '跟我來',
+  Affirmative: '收到',
+  Negative: '不行',
+  Thanks: '謝了',
+  You: '你',
+  'Voice callouts': '語音播報',
+  Vibration: '震動回饋',
 };
 
 export function t(s: string): string {

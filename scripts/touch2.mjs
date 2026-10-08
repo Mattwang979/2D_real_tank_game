@@ -80,7 +80,8 @@ st = await ev(() => {
   const p = window.__pen.battle.player;
   return { aim: p.aimAngle, gun: p.gunWorldAng, ang: p.ang, speed: p.speed };
 });
-check('aim stays put while driving/turning', Math.abs(st.aim - aimBefore) < 1e-6 && Math.abs(st.gun - aimBefore) < 0.05, JSON.stringify(st));
+const wrap = (a) => Math.abs(Math.atan2(Math.sin(a), Math.cos(a)));
+check('aim stays put while driving/turning', wrap(st.aim - aimBefore) < 1e-6 && wrap(st.gun - aimBefore) < 0.05, JSON.stringify(st));
 // 4) handbrake while driving: hard stop
 await ev(() => {
   const p = window.__pen.battle.player;

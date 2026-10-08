@@ -100,6 +100,8 @@ export class Tank {
   lastSeenPos: V2 | null = null;
   /** battle time when the enemy last saw this tank */
   lastSeenAt = -99;
+  /** last radio call (battle time) */
+  radioAt = -99;
 
   trackAcc = 0;
   hitFlash = 0;

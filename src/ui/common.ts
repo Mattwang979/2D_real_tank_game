@@ -1,6 +1,7 @@
 // Small DOM helpers shared by the menu screens.
 
 import { audio } from '../core/audio';
+import { voice } from '../core/voice';
 import { get, reset, save } from '../core/save';
 import { VEHICLES, type VehicleSpec, penAt } from '../data/vehicles';
 import { getLang, setLang, t } from './i18n';
@@ -114,6 +115,7 @@ export function settingsMenu(onChange: () => void) {
   vol.addEventListener('input', () => {
     s.volume = parseFloat(vol.value);
     audio.setVolume(s.volume);
+    voice.volume = s.volume;
     save();
   });
   const c = h(
@@ -132,6 +134,15 @@ export function settingsMenu(onChange: () => void) {
       seg([['high', t('High')], ['low', t('Low')]], s.quality, (v) => (s.quality = v as 'high' | 'low')),
       h('div', { class: 'label' }, t('Volume')),
       vol,
+      h('div', { class: 'label' }, t('Voice callouts')),
+      seg([['on', t('On')], ['off', t('Off')]], s.voice ? 'on' : 'off', (v) => {
+        s.voice = v === 'on';
+        voice.enabled = s.voice;
+      }),
+      h('div', { class: 'label' }, t('Vibration')),
+      seg([['on', t('On')], ['off', t('Off')]], s.haptics ? 'on' : 'off', (v) => {
+        s.haptics = v === 'on';
+      }),
       h('div', { class: 'label' }, t('Player name')),
       name,
     ),

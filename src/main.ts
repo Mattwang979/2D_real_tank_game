@@ -6,6 +6,7 @@ import '@fontsource/barlow-condensed/700-italic.css';
 import './styles.css';
 
 import { audio } from './core/audio';
+import { voice } from './core/voice';
 import { get } from './core/save';
 import { Battle } from './game/battle';
 import { MAPS, type MapDef } from './game/map';
@@ -36,6 +37,8 @@ document.body.append(loading);
 const settings = get().settings;
 setLang(settings.lang);
 audio.setVolume(settings.volume);
+voice.enabled = settings.voice;
+voice.volume = settings.volume;
 
 let current: ScreenId = 'title';
 const title = new Title(screens.title);
@@ -248,6 +251,7 @@ function openPause() {
           const st = get().settings;
           st.volume = st.volume > 0 ? 0 : 0.8;
           audio.setVolume(st.volume);
+          voice.volume = st.volume;
           close();
         },
       }, `${t('Sound')}: ${get().settings.volume > 0 ? t('On') : t('Off')}`),
@@ -278,6 +282,7 @@ function finishBattle() {
   hud?.destroy();
   audio.engineStop();
   audio.ambience(null);
+  voice.stop();
   battle = null;
   renderer = null;
   hud = null;
@@ -323,4 +328,5 @@ applyI18n();
   startBattle,
   openLobby,
   save: get,
+  voice,
 };

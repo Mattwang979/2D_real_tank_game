@@ -13,6 +13,9 @@ import { BATTLE_TIME, TICKETS } from '../game/battle';
 import { CARRIER } from '../game/carrier';
 import { ARTY } from '../game/support';
 import { FLARE, flareLight } from '../game/weather';
+import { PING_LIFE, RADIO, radioIndex } from '../game/radio';
+import { voice } from '../core/voice';
+import { getLang } from './i18n';
 import { bermCover } from '../game/map';
 import { Tank } from '../game/tank';
 import { TEAM_COL, predColor, type BattleRenderer } from '../render/battleRender';
@@ -32,6 +35,8 @@ export interface Controls {
   boost(): void;
   repair(): void;
   crew(): void;
+  /** team radio command (index in RADIO) with an optional ping position */
+  radio(cmd: number, x?: number, y?: number): void;
   recon(): void;
   arty(x: number, y: number): void;
   respawn(id: string): void;
@@ -72,6 +77,10 @@ export function localControls(b: Battle): Controls {
       const p = me();
       if (p) b.useCrew(p);
     },
+    radio: (cmd, x, y) => {
+      const p = me();
+      if (p) b.radio(p, cmd, x, y);
+    },
     recon: () => {
       const p = me();
       if (p) b.useRecon(p);
@@ -109,6 +118,16 @@ interface Feed {
   text: string;
   killerFriend: boolean;
   t: number;
+  /** team radio line instead of a kill */
+  radio?: boolean;
+}
+
+interface Ping {
+  x: number;
+  y: number;
+  t: number;
+  /** RADIO command id */
+  kind: string;
 }
 
 interface Notice {
@@ -167,6 +186,12 @@ export class Hud {
   /** targeting: a quick tap on the drive side also picks the target */
   private tapCand: { id: number; pos: V2; t: number } | null = null;
   private hullDownT = 0;
+  /** radio menu open */
+  radioOpen = false;
+  private radioOpenT = 0;
+  pings: Ping[] = [];
+  /** speech bubbles over tanks that just used the radio */
+  private bubbles = new Map<number, { text: string; t: number }>();
 
   constructor(b: Battle, r: BattleRenderer, canvas: HTMLCanvasElement, controls?: Controls) {
     this.b = b;
@@ -232,6 +257,17 @@ export class Hud {
       const right = fx - ar - br - 10;
       for (let i = 0; i < n; i++) btns.push({ id: `ammo${i}`, x: right - (n - i) * (bw + 6) + 6, y: fy + fr - bh, w: bw, h: bh });
     }
+    if (p && p.alive && this.b.state === 'playing') {
+      const mm = this.minimapRect();
+      const rb = { id: 'radio', x: mm.x + mm.size + 28, y: s.t + 26, r: 18 };
+      btns.push(rb);
+      if (this.radioOpen) {
+        const items = RADIO.map((c, i) => ({ c, i })).filter((o) => o.c.menu);
+        const iw = 118;
+        const ih = 30;
+        items.forEach((o, k) => btns.push({ id: `radio:${o.i}`, x: rb.x - 16 + (k % 2) * (iw + 6), y: rb.y + 24 + Math.floor(k / 2) * (ih + 6), w: iw, h: ih }));
+      }
+    }
     btns.push({ id: 'pause', x: W - s.r - 30, y: s.t + 26, r: 18 });
     btns.push({ id: 'zin', x: W - s.r - 72, y: s.t + 26, r: 18 });
     btns.push({ id: 'zout', x: W - s.r - 112, y: s.t + 26, r: 18 });
@@ -294,6 +330,7 @@ export class Hud {
   private onDown = (e: PointerEvent) => {
     e.preventDefault();
     audio.unlock();
+    voice.unlock();
     // a reused pointer id means we missed its pointerup; drop stale state
     this.pressed.delete(e.pointerId);
     this.free.delete(e.pointerId);
@@ -329,6 +366,15 @@ export class Hud {
       if (p.x >= W * 0.45 && Math.hypot(p.x - this.fireC.x, p.y - this.fireC.y) > this.fireC.r + 10) {
         this.aimPt = { id: e.pointerId, pos: p };
         this.capture(e);
+        return;
+      }
+    }
+    {
+      // tap on the minimap: ping that spot for the team
+      const mm = this.minimapRect();
+      if (p.x >= mm.x && p.x <= mm.x + mm.size && p.y >= mm.y && p.y <= mm.y + mm.size) {
+        const S = this.b.map.size;
+        this.sendRadio(radioIndex('ping'), { x: ((p.x - mm.x) / mm.size) * S, y: ((p.y - mm.y) / mm.size) * S });
         return;
       }
     }
@@ -513,6 +559,19 @@ export class Hud {
     audio.click();
   }
 
+  /** Send a radio command; pings that point at something use the gun sight (or `at`). */
+  sendRadio(cmd: number, at?: V2) {
+    const p = this.b.player;
+    const c = RADIO[cmd];
+    if (!p || !c) return;
+    let pos = at;
+    if (!pos && c.ping === 'aim') {
+      const m = p.muzzle();
+      pos = this.r.aimEnd ?? { x: m.x + Math.cos(p.gunWorldAng) * 80, y: m.y + Math.sin(p.gunWorldAng) * 80 };
+    }
+    this.controls.radio(cmd, pos?.x, pos?.y);
+  }
+
   private callArty(w: V2) {
     this.targeting = false;
     this.aimPt = null;
@@ -560,6 +619,12 @@ export class Hud {
       else if (p.crewCd > 0) this.note(`${tr('Crew carrier')} ${Math.ceil(p.crewCd)}s`, '#d8d0b8');
       else if (!p.needsCrew()) this.note(tr('No wounded crew'), '#c8c8c0');
       else this.controls.crew();
+    } else if (id === 'radio') {
+      this.radioOpen = !this.radioOpen;
+      this.radioOpenT = 0;
+    } else if (id.startsWith('radio:')) {
+      this.radioOpen = false;
+      this.sendRadio(parseInt(id.slice(6), 10));
     } else if (id === 'recon' && p) {
       this.controls.recon();
     } else if (id === 'arty' && p) {
@@ -593,7 +658,17 @@ export class Hud {
     for (const n of this.notices) n.t += dt;
     this.notices = this.notices.filter((n) => n.t < 2.6);
     for (const f of this.feed) f.t += dt;
-    this.feed = this.feed.filter((f) => f.t < 7);
+    this.feed = this.feed.filter((f) => f.t < (f.radio ? 5 : 7));
+    for (const pg of this.pings) pg.t += dt;
+    this.pings = this.pings.filter((pg) => pg.t < PING_LIFE);
+    for (const [id, bb] of this.bubbles) {
+      bb.t += dt;
+      if (bb.t > 2.8) this.bubbles.delete(id);
+    }
+    if (this.radioOpen) {
+      this.radioOpenT += dt;
+      if (this.radioOpenT > 8) this.radioOpen = false;
+    }
     for (const h of this.hitcams) h.t += dt;
     for (const i of this.incoming) i.t += dt;
     this.incoming = this.incoming.filter((i) => i.t < 2.2);
@@ -609,6 +684,7 @@ export class Hud {
       this.brakeHeld = false;
       this.targeting = false;
       this.aimPt = null;
+      this.radioOpen = false;
       if (this.sight) this.endSight();
       if (p) p.handbrake = false;
       return;
@@ -730,6 +806,7 @@ export class Hud {
     const b = this.b;
     if ('to' in ev && ev.to !== undefined && ev.to !== b.localKey) return;
     if (ev.type === 'notice' && ev.team !== undefined && ev.team !== b.playerTeam) return;
+    if (ev.type === 'radio' && ev.team !== b.playerTeam) return;
     switch (ev.type) {
       case 'hit': {
         if (ev.shooter.isPlayer && ev.target.team !== ev.shooter.team) {
@@ -765,6 +842,24 @@ export class Hud {
       case 'captured':
         this.note(ev.team === b.playerTeam ? tr('Point A captured') : tr('Point A lost'), ev.team === b.playerTeam ? TEAM_COL.friend : TEAM_COL.enemy);
         break;
+      case 'radio': {
+        const c = RADIO[ev.cmd];
+        if (!c) break;
+        const said = tr(c.text);
+        const me = !!ev.from && ev.from === b.player;
+        this.feed.unshift({ text: `📻 ${me ? tr('You') : ev.name}: ${said}`, killerFriend: true, t: 0, radio: true });
+        this.feed = this.feed.slice(0, 5);
+        if (ev.x !== undefined && ev.y !== undefined) {
+          // one ping per caller and kind: a new one replaces the old
+          this.pings = this.pings.filter((pg) => !(pg.kind === c.id && Math.hypot(pg.x - ev.x!, pg.y - ev.y!) < 12));
+          this.pings.push({ x: ev.x, y: ev.y, t: 0, kind: c.id });
+          if (this.pings.length > 6) this.pings.shift();
+        }
+        if (ev.from) this.bubbles.set(ev.from.id, { text: said, t: 0 });
+        audio.radio();
+        voice.say(said, getLang(), ev.from ? 0.75 + ((ev.from.id * 37) % 10) / 25 : 0.9);
+        break;
+      }
       case 'playerDead': {
         let entry: HitCamEntry | null = null;
         if (ev.res && b.player) {
@@ -804,6 +899,8 @@ export class Hud {
       if (hh > 90) drawHitCam(ctx, this.hitcams[0], W - s.r - hw - 10, y, hw, hh);
     }
 
+    this.drawPings(ctx);
+    this.drawBubbles(ctx);
     if (live && p) {
       this.drawIncoming(ctx, p);
       this.drawOwnMarker(ctx, p);
@@ -815,6 +912,7 @@ export class Hud {
       this.drawFireStick(ctx, p);
       if (this.sight) this.drawSightTouch(ctx);
       if (this.targeting) this.drawTargeting(ctx, W);
+      if (this.radioOpen) this.drawRadioMenu(ctx);
     } else {
       for (const bt of this.buttons) this.drawTopBtn(ctx, bt);
     }
@@ -1012,6 +1110,19 @@ export class Hud {
       ctx.arc(x + sm.x * sc, y + sm.y * sc, Math.max(1.5, sm.r * sc), 0, Math.PI * 2);
       ctx.fill();
     }
+    // team pings
+    for (const pg of this.pings) {
+      const k = (pg.t * 1.6) % 1;
+      ctx.strokeStyle = pingColor(pg.kind, 1 - k);
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(x + pg.x * sc, y + pg.y * sc, 2 + k * 9, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = pingColor(pg.kind, 1);
+      ctx.beginPath();
+      ctx.arc(x + pg.x * sc, y + pg.y * sc, 2.4, 0, Math.PI * 2);
+      ctx.fill();
+    }
     // flares burning in the night sky
     for (const f of b.flares) {
       if (f.t < FLARE.FLIGHT) continue;
@@ -1161,7 +1272,7 @@ export class Hud {
       ctx.fillStyle = 'rgba(10,12,10,0.5)';
       roundRect(ctx, W - s.r - 14 - tw - 8, y - 8, tw + 12, 16, 3);
       ctx.fill();
-      ctx.fillStyle = f.killerFriend ? '#a9cbff' : '#ffb2a8';
+      ctx.fillStyle = f.radio ? '#d6ecff' : f.killerFriend ? '#a9cbff' : '#ffb2a8';
       ctx.fillText(f.text, W - s.r - 16, y);
       y += 17;
     }
@@ -1703,6 +1814,10 @@ export class Hud {
         const st = this.throwStick?.kind === 'smoke' ? this.throwStick : null;
         this.drawAbility(ctx, bt, tr('SMOKE'), { active: !!st, cd: p.smokeCd / 4, dim: p.smokeCharges <= 0, badge: String(p.smokeCharges) });
         if (st && st.moved && dist(st.pos, st.base) >= 16) this.drawThrowKnob(ctx, bt, st);
+      } else if (bt.id === 'radio') {
+        this.drawRadioBtn(ctx, bt);
+      } else if (bt.id.startsWith('radio:')) {
+        // drawn by drawRadioMenu
       } else if (bt.id === 'flare') {
         const st = this.throwStick?.kind === 'flare' ? this.throwStick : null;
         this.drawAbility(ctx, bt, tr('FLARE'), { active: !!st, fill: 'rgba(90,70,30,0.8)', cd: p.flareCd / FLARE.CD, dim: p.flareCharges <= 0, badge: String(p.flareCharges), sub: p.flareCd > 0 ? `${Math.ceil(p.flareCd)}` : undefined });
@@ -1732,6 +1847,159 @@ export class Hud {
         }
       } else this.drawTopBtn(ctx, bt);
     }
+  }
+
+  private drawRadioBtn(ctx: Ctx, bt: Btn) {
+    const r = bt.r!;
+    ctx.save();
+    ctx.fillStyle = this.radioOpen ? 'rgba(60,90,130,0.85)' : 'rgba(20,22,20,0.55)';
+    ctx.beginPath();
+    ctx.arc(bt.x, bt.y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = this.radioOpen ? 'rgba(170,215,255,0.95)' : 'rgba(255,255,255,0.3)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    // speech bubble glyph
+    ctx.fillStyle = '#f2f2ea';
+    ctx.beginPath();
+    ctx.roundRect(bt.x - 8, bt.y - 7, 16, 11, 3);
+    ctx.moveTo(bt.x - 4, bt.y + 3);
+    ctx.lineTo(bt.x - 6, bt.y + 8);
+    ctx.lineTo(bt.x + 1, bt.y + 3);
+    ctx.fill();
+    ctx.fillStyle = '#20221f';
+    for (const dx of [-4, 0, 4]) {
+      ctx.beginPath();
+      ctx.arc(bt.x + dx, bt.y - 1.5, 1.3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  private drawRadioMenu(ctx: Ctx) {
+    const items = this.buttons.filter((b) => b.id.startsWith('radio:'));
+    if (!items.length) return;
+    ctx.save();
+    const x0 = Math.min(...items.map((b) => b.x)) - 6;
+    const y0 = Math.min(...items.map((b) => b.y)) - 6;
+    const x1 = Math.max(...items.map((b) => b.x + b.w!)) + 6;
+    const y1 = Math.max(...items.map((b) => b.y + b.h!)) + 6;
+    ctx.fillStyle = 'rgba(12,16,20,0.78)';
+    roundRect(ctx, x0, y0, x1 - x0, y1 - y0, 7);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(160,210,255,0.45)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.textAlign = 'center';
+    ctx.font = '700 12px "Barlow Condensed", sans-serif';
+    for (const bt of items) {
+      const c = RADIO[parseInt(bt.id.slice(6), 10)];
+      const order = !!c.order;
+      ctx.fillStyle = order ? 'rgba(40,62,88,0.9)' : 'rgba(30,34,32,0.9)';
+      roundRect(ctx, bt.x, bt.y, bt.w!, bt.h!, 5);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+      ctx.stroke();
+      ctx.fillStyle = '#eef4fa';
+      ctx.fillText(tr(c.label), bt.x + bt.w! / 2, bt.y + bt.h! / 2 + 1);
+    }
+    ctx.restore();
+  }
+
+  /** Team pings in the world (edge arrows when off screen). */
+  private drawPings(ctx: Ctx) {
+    if (!this.pings.length) return;
+    const W = this.r.W;
+    const H = this.r.H;
+    ctx.save();
+    for (const pg of this.pings) {
+      const sp = this.r.toScreen(pg);
+      const fade = pg.t > PING_LIFE - 1 ? PING_LIFE - pg.t : 1;
+      const col = pingColor(pg.kind, fade);
+      const m = 22;
+      if (sp.x > m && sp.x < W - m && sp.y > m && sp.y < H - m) {
+        for (let i = 0; i < 2; i++) {
+          const k = (pg.t * 1.2 + i * 0.5) % 1;
+          ctx.strokeStyle = pingColor(pg.kind, fade * (1 - k));
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.ellipse(sp.x, sp.y, 8 + k * 26, (8 + k * 26) * 0.6, 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        // marker pin
+        const bob = Math.sin(pg.t * 5) * 2;
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        ctx.moveTo(sp.x, sp.y - 4 + bob);
+        ctx.arc(sp.x, sp.y - 18 + bob, 9, Math.PI * 0.75, Math.PI * 0.25);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = '#1b1a16';
+        ctx.font = '700 11px "Barlow Condensed", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(pingGlyph(pg.kind), sp.x, sp.y - 17 + bob);
+      } else {
+        // edge marker, kept clear of the corner buttons
+        const cx = W / 2;
+        const cy = H / 2;
+        const a = Math.atan2(sp.y - cy, sp.x - cx);
+        const kx = (W / 2 - 34) / Math.max(1e-3, Math.abs(Math.cos(a)));
+        const ky = (H / 2 - 56) / Math.max(1e-3, Math.abs(Math.sin(a)));
+        const k = Math.min(kx, ky);
+        const x = cx + Math.cos(a) * k;
+        const y = cy + Math.sin(a) * k;
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        ctx.arc(0, 0, 9, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.rotate(a);
+        ctx.beginPath();
+        ctx.moveTo(15, 0);
+        ctx.lineTo(8, -5);
+        ctx.lineTo(8, 5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.rotate(-a);
+        ctx.fillStyle = '#1b1a16';
+        ctx.font = '700 11px "Barlow Condensed", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(pingGlyph(pg.kind), 0, 1);
+        ctx.restore();
+      }
+    }
+    ctx.restore();
+  }
+
+  /** What teammates just said on the radio, over their tanks. */
+  private drawBubbles(ctx: Ctx) {
+    if (!this.bubbles.size) return;
+    ctx.save();
+    ctx.font = '600 12px "Barlow Condensed", sans-serif';
+    ctx.textAlign = 'center';
+    for (const [id, bb] of this.bubbles) {
+      const t = this.b.tanks.find((x) => x.id === id);
+      if (!t) continue;
+      if (t.team !== this.b.playerTeam) continue;
+      const sp = this.r.toScreen({ x: t.pos.x, y: t.pos.y - t.bp.radius - 2.5 });
+      if (sp.x < -40 || sp.x > this.r.W + 40 || sp.y < -20 || sp.y > this.r.H + 20) continue;
+      const a = bb.t < 0.15 ? bb.t / 0.15 : bb.t > 2.3 ? (2.8 - bb.t) / 0.5 : 1;
+      ctx.globalAlpha = Math.max(0, a);
+      const tw = ctx.measureText(bb.text).width + 14;
+      const y = sp.y - 26;
+      ctx.fillStyle = 'rgba(236,244,252,0.92)';
+      roundRect(ctx, sp.x - tw / 2, y - 10, tw, 20, 6);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(sp.x - 5, y + 9);
+      ctx.lineTo(sp.x, y + 16);
+      ctx.lineTo(sp.x + 5, y + 9);
+      ctx.fill();
+      ctx.fillStyle = '#17222e';
+      ctx.fillText(bb.text, sp.x, y + 1);
+    }
+    ctx.restore();
   }
 
   /** Knob of a smoke / flare button being dragged to pick the direction. */
@@ -1893,6 +2161,27 @@ export class Hud {
 }
 
 export { formatNum };
+
+function pingColor(kind: string, a: number): string {
+  const al = Math.max(0, Math.min(1, a));
+  return kind === 'enemy' ? `rgba(255,120,80,${al})` : kind === 'help' ? `rgba(120,200,255,${al})` : `rgba(255,214,110,${al})`;
+}
+
+function pingGlyph(kind: string): string {
+  switch (kind) {
+    case 'enemy':
+      return '!';
+    case 'attack':
+    case 'defend':
+      return 'A';
+    case 'help':
+      return '+';
+    case 'follow':
+      return '»';
+    default:
+      return '•';
+  }
+}
 
 /** Short ammo label; disambiguates guns that carry two rounds of the same type. */
 export function shellLabel(p: Tank, i: number): string {
