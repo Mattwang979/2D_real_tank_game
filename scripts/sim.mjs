@@ -6,7 +6,7 @@ const page = await browser.newPage({ viewport: { width: 844, height: 390 } });
 page.on('pageerror', (e) => console.log('[pageerror]', e.message, e.stack?.split('\n').slice(0, 5).join(' | ')));
 await page.goto('http://localhost:5173/');
 await page.waitForTimeout(800);
-await page.evaluate((m) => { const s = window.__pen.save(); s.settings.map = m; }, map);
+await page.evaluate(([m, lu]) => { const s = window.__pen.save(); s.settings.map = m; if (lu) s.lineup = lu.split(','); }, [map, process.env.LINEUP || '']);
 await page.evaluate(() => window.__pen.startBattle());
 await page.waitForTimeout(1500);
 const res = await page.evaluate(async (secs) => {

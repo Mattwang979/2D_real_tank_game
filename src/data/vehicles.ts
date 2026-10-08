@@ -108,7 +108,7 @@ export interface VehicleSpec {
   nation: Nation;
   cls: VClass;
   br: number;
-  tier: 1 | 2 | 3;
+  tier: 1 | 2 | 3 | 4;
   row: number;
   prereq: string | null;
   rp: number;
@@ -172,6 +172,12 @@ const S = {
   br471: (n: number): ShellSpec => ({ name: 'BR-471', type: 'APHE', pen: [175, 163, 151], velocity: 795, explosive: 156, caliber: 122, count: n }),
   br471b: (n: number): ShellSpec => ({ name: 'BR-471B', type: 'APHE', pen: [205, 192, 178], velocity: 795, explosive: 156, caliber: 122, count: n }),
   of471: (n: number): ShellSpec => ({ name: 'OF-471', type: 'HE', pen: [30, 30, 30], velocity: 800, explosive: 3600, caliber: 122, count: n }),
+  pzgr3943: (n: number): ShellSpec => ({ name: 'PzGr 39/43', type: 'APHE', pen: [237, 217, 197], velocity: 1000, explosive: 50, caliber: 88, count: n }),
+  pzgr4043: (n: number): ShellSpec => ({ name: 'PzGr 40/43', type: 'APCR', pen: [300, 271, 239], velocity: 1130, explosive: 0, caliber: 88, count: n }),
+  sprgr43: (n: number): ShellSpec => ({ name: 'Sprgr 43', type: 'HE', pen: [13, 13, 13], velocity: 750, explosive: 1000, caliber: 88, count: n }),
+  br412: (n: number): ShellSpec => ({ name: 'BR-412', type: 'APHE', pen: [201, 185, 168], velocity: 895, explosive: 65, caliber: 100, count: n }),
+  br412b: (n: number): ShellSpec => ({ name: 'BR-412B', type: 'APHE', pen: [212, 196, 179], velocity: 895, explosive: 65, caliber: 100, count: n }),
+  of412: (n: number): ShellSpec => ({ name: 'OF-412', type: 'HE', pen: [20, 20, 20], velocity: 900, explosive: 1460, caliber: 100, count: n }),
 };
 
 export const VEHICLES: VehicleSpec[] = [
@@ -424,6 +430,59 @@ export const VEHICLES: VehicleSpec[] = [
       gunLen: 4.5, gunW: 0.21, brake: 'is', mantlet: 'curved', mantletW: 0.95, mantletL: 0.62, colors: PAL.ussr, exhaust: 'rear2', fuelDrums: true,
     },
     layout: { trans: 'rear', fuel: 'sides', ammo: ['casemate', 'floor'], engineLen: 1.8 },
+  },
+  // ===================== TIER IV =====================
+  {
+    id: 'm46', name: 'M46 Patton', nation: 'usa', cls: 'medium', br: 6.7, tier: 4, row: 0, prereq: 'm26', rp: 13500, cr: 82000, year: 1949,
+    weight: 44, hp: 810, speed: 48, reverse: 16, traverse: 24,
+    gun: { name: '90 mm M3A1', caliber: 90, reload: 8.0, dispersion: 0.18, shells: [S.m82(40), S.m304(8), S.m71(22)] },
+    crew: ['D', 'R', 'G', 'C', 'L'],
+    armor: { ufp: P(102, 46), lfp: P(76, 53), side: P(76, 0), rear: P(51, 10), tFront: P(102, 10), tSide: P(76, 5), tRear: P(76, 0), mantlet: P(114, 0), roof: 25 },
+    look: {
+      L: 6.95, W: 3.51, trackW: 0.58, fender: 0.25, nose: 'chamfer', noseLen: 1.5, chamfer: 0.25, rearChamfer: 0.2, engineDeck: 2.5, grille: 'mesh',
+      turret: { shape: 'round', x: 0.6, len: 3.0, wid: 2.6, ox: -0.35, bustle: 0.8, cupola: { x: -0.6, y: 0.55, r: 0.4 }, hatch: { x: -0.5, y: -0.6, r: 0.3 }, extra: ['vent', 'stowage'] },
+      gunLen: 4.4, gunW: 0.19, brake: 'single', mantlet: 'box', mantletW: 1.25, mantletL: 0.36, colors: PAL.usa, exhaust: 'rearBox', fumeExtractor: true,
+    },
+    layout: { trans: 'rear', fuel: 'rear', ammo: ['floor', 'sponson'], engineLen: 2.0 },
+  },
+  {
+    id: 'tiger2', name: 'Tiger II (H)', nation: 'germany', cls: 'heavy', br: 6.7, tier: 4, row: 1, prereq: 'tiger1', rp: 14000, cr: 86000, year: 1944,
+    weight: 68.5, hp: 700, speed: 41, reverse: 11, traverse: 11,
+    gun: { name: '8.8 cm KwK 43', caliber: 88, reload: 10.5, dispersion: 0.15, shells: [S.pzgr3943(56), S.pzgr4043(6), S.sprgr43(22)] },
+    crew: ['D', 'R', 'G', 'C', 'L'],
+    armor: { ufp: P(150, 50), lfp: P(100, 50), side: P(80, 25), rear: P(80, 30), tFront: P(180, 9), tSide: P(80, 21), tRear: P(80, 20), mantlet: P(180, 0), roof: 40 },
+    look: {
+      L: 7.38, W: 3.75, trackW: 0.8, fender: 0.6, nose: 'sloped', noseLen: 2.0, chamfer: 0.12, rearChamfer: 0.15, engineDeck: 2.4, grille: 'fans',
+      turret: { shape: 'panther', x: 0.25, len: 3.65, wid: 2.6, ox: -0.35, frontW: 0.52, cupola: { x: -0.9, y: -0.62, r: 0.4 }, hatch: { x: -1.2, y: 0.45, r: 0.3 }, extra: ['vent', 'periscopes'] },
+      gunLen: 5.4, gunW: 0.16, brake: 'double', mantlet: 'saukopf', mantletW: 0.85, mantletL: 0.55, colors: PAL.gerY, camo: 'stripes', exhaust: 'rear2',
+    },
+    layout: { trans: 'front', fuel: 'rear', ammo: ['sponson', 'bustle'], engineLen: 2.0 },
+  },
+  {
+    id: 'is3', name: 'IS-3', nation: 'ussr', cls: 'heavy', br: 7.0, tier: 4, row: 2, prereq: 'is2', rp: 14500, cr: 88000, year: 1945,
+    weight: 46.5, hp: 520, speed: 40, reverse: 9, traverse: 14,
+    gun: { name: '122 mm D-25T', caliber: 122, reload: 17, dispersion: 0.2, shells: [S.br471(12), S.br471b(10), S.of471(6)] },
+    crew: ['D', 'G', 'C', 'L'],
+    armor: { ufp: P(110, 60), lfp: P(110, 50), side: P(90, 35), rear: P(60, 40), tFront: P(220, 30), tSide: P(170, 40), tRear: P(110, 20), mantlet: P(250, 0), roof: 30 },
+    look: {
+      L: 6.67, W: 3.15, trackW: 0.65, fender: 0.42, nose: 'pike', noseLen: 1.6, chamfer: 0.9, rearChamfer: 0.3, engineDeck: 2.4, grille: 'louvre',
+      turret: { shape: 'dome', x: 0.35, len: 3.1, wid: 3.05, ox: -0.1, cupola: { x: -0.65, y: -0.75, r: 0.36 }, hatch: { x: -0.6, y: 0.75, r: 0.3 }, extra: ['vent'] },
+      gunLen: 4.6, gunW: 0.22, brake: 'is', mantlet: 'curved', mantletW: 1.0, mantletL: 0.4, colors: PAL.ussr, exhaust: 'rear2', fuelDrums: true,
+    },
+    layout: { trans: 'rear', fuel: 'sides', ammo: ['floor', 'bustle'], engineLen: 1.8 },
+  },
+  {
+    id: 't54', name: 'T-54 (1949)', nation: 'ussr', cls: 'medium', br: 7.3, tier: 4, row: 0, prereq: 't44', rp: 15000, cr: 92000, year: 1949,
+    weight: 36, hp: 520, speed: 50, reverse: 9, traverse: 24,
+    gun: { name: '100 mm D-10T', caliber: 100, reload: 8.7, dispersion: 0.18, shells: [S.br412(24), S.br412b(10), S.of412(10)] },
+    crew: ['D', 'G', 'C', 'L'],
+    armor: { ufp: P(100, 60), lfp: P(100, 55), side: P(80, 0), rear: P(45, 17), tFront: P(200, 30), tSide: P(150, 30), tRear: P(65, 20), mantlet: P(200, 0), roof: 30 },
+    look: {
+      L: 6.04, W: 3.27, trackW: 0.58, fender: 0.36, nose: 'sloped', noseLen: 1.6, chamfer: 0.12, rearChamfer: 0.12, engineDeck: 1.9, grille: 'mesh',
+      turret: { shape: 'dome', x: 0.45, len: 2.95, wid: 2.8, ox: -0.05, cupola: { x: -0.55, y: -0.68, r: 0.36 }, hatch: { x: -0.5, y: 0.68, r: 0.3 }, extra: ['vent'] },
+      gunLen: 4.6, gunW: 0.18, brake: 'none', mantlet: 'curved', mantletW: 0.9, mantletL: 0.36, colors: PAL.ussr, exhaust: 'side', fuelDrums: true,
+    },
+    layout: { trans: 'rear', fuel: 'front', ammo: ['front', 'floor'], engineLen: 1.3 },
   },
 ];
 

@@ -32,11 +32,11 @@ A top-down WWII tank game for phones (landscape) with realistic armor, crew and 
 - 彈藥架可能殉爆（砲塔被炸飛）、油箱與引擎可能起火；乘員陣亡後由其他乘員補位；損壞模組會自動維修。
 - 命中時右側會出現 **X 光擊殺畫面**，顯示彈道、破片與受損模組。
 
-## 載具（19 台，美 / 德 / 蘇）
+## 載具（23 台，美 / 德 / 蘇，四個階級）
 
-USA：M24 Chaffee、M4A2 Sherman、M10 GMC、M4A3 (76) W、M18 Hellcat、M26 Pershing
-Germany：Sd.Kfz. 234/2 Puma、Pz.Kpfw. IV H、StuG III G、Panther D、Panther G、Tiger I
-USSR：T-34 (1941)、SU-85、T-34-85、IS-1、T-44、IS-2 (1944)、ISU-122S
+USA：M24 Chaffee、M4A2 Sherman、M10 GMC、M4A3 (76) W、M18 Hellcat、M26 Pershing、M46 Patton
+Germany：Sd.Kfz. 234/2 Puma、Pz.Kpfw. IV H、StuG III G、Panther D、Panther G、Tiger I、Tiger II (H)
+USSR：T-34 (1941)、SU-85、T-34-85、IS-1、T-44、IS-2 (1944)、ISU-122S、IS-3、T-54 (1949)
 
 數據為史實近似值。戰鬥獲得 RP（研發點數）與 CR（銀幣），在科技樹研發並購買新車；進度存在瀏覽器裡。
 

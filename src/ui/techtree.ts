@@ -55,7 +55,8 @@ export class TechTree {
     const list = VEHICLES.filter((v) => v.nation === this.nation);
     const rows = Math.max(...list.map((v) => v.row)) + 1;
     this.grid.style.gridTemplateRows = `auto repeat(${rows}, 104px)`;
-    for (let tier = 1; tier <= 3; tier++) {
+    const maxTier = Math.max(...list.map((v) => v.tier));
+    for (let tier = 1; tier <= maxTier; tier++) {
       const head = h('div', { class: 'tier-h', style: `grid-column:${tier};grid-row:1` }, `${t('TIER')} ${ROMAN[tier]}`);
       this.grid.append(head);
     }

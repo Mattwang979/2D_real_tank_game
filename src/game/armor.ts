@@ -120,7 +120,7 @@ export function intersectTank(t: Tank, p0: V2, p1: V2, heightRoll: number, barre
     if (bm && bm.def.shape.t === 'rect') {
       const s = bm.def.shape;
       const r = rayRect(g0.x, g0.y, g1.x - g0.x, g1.y - g0.y, s.x0, s.y0 - 0.05, s.x1, s.y1 + 0.05);
-      if (r && r[0] >= 0 && r[0] <= 1 && barrelRoll < 0.35 && (!chosen || r[0] < chosen.t)) {
+      if (r && r[0] >= 0 && r[0] <= 1 && barrelRoll < 0.25 && (!chosen || r[0] < chosen.t)) {
         chosen = { t: r[0], part: 'barrel', world: lerpP(p0, p1, r[0]) };
       }
     }
