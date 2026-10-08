@@ -11,7 +11,7 @@ import { VEHICLES, getVehicle, type ShellSpec, type VehicleSpec } from '../data/
 import { AIController } from './ai';
 import { type ImpactResult, fireTick, intersectTank, resolveImpact } from './armor';
 import { Effects } from './effects';
-import { type GameMap, type Tree, bermCrossing, buildMap, collideStatic, losBlocked, MAPS, onBerm, shellObstacleHit, type Contact } from './map';
+import { type Building, type GameMap, type Tree, bermCrossing, buildMap, collideStatic, damageBuilding, losBlocked, MAPS, onBerm, setBuildingState, shellObstacleHit, structDamage, type Contact } from './map';
 import { CARRIER, type Carrier, carrierHit, driveCarrier } from './carrier';
 import { NavGrid } from './nav';
 import { Tank } from './tank';
@@ -56,6 +56,7 @@ export type NetFx =
   | { k: 'gren'; team: 0 | 1; g: number[][] }
   | { k: 'cloud'; id: number; x: number; y: number; rm: number; life: number; team: 0 | 1 }
   | { k: 'cdie'; id: number; x: number; y: number }
+  | { k: 'bld'; id: number; st: number }
   | { k: 'kill'; id: number; how: number; vx: number; vy: number; spin: number; vh: number; wf: number }
   | { k: 'tree'; id: number; dir: number }
   | { k: 'wall'; id: number }
@@ -109,6 +110,8 @@ export interface BattleConfig {
 export interface BattleHooks {
   stamp?: (d: { kind: 'track' | 'scorch' | 'crater' | 'fallen'; x: number; y: number; ang: number; w: number; h: number; seed?: number; a?: number }) => void;
   fellTree?: (t: Tree, dir: number) => void;
+  /** a building's damage state changed (redraw it) */
+  building?: (b: Building) => void;
 }
 
 const AI_NAMES = ['Anvil', 'Badger', 'Cobalt', 'Drake', 'Ember', 'Falcon', 'Granite', 'Hammer', 'Iron', 'Jackal', 'Kodiak', 'Lynx', 'Mason', 'Nomad', 'Onyx', 'Pike', 'Quarry', 'Raven', 'Sable', 'Talon', 'Ursa', 'Viper', 'Wolf', 'Yukon', 'Zephyr', 'Bishop', 'Cutter', 'Dusty', 'Flint', 'Gunner'];
@@ -450,6 +453,28 @@ export class Battle {
     this.netOut?.push({ k: 'cdie', id: c.id, x: r2(c.pos.x), y: r2(c.pos.y) });
   }
 
+  /** Shell or blast damage to a building; heavy guns bring them down and open new lines of fire. */
+  hitBuilding(bld: Building, amount: number, by: Tank | null, x: number, y: number) {
+    const st = damageBuilding(this.map, bld, amount);
+    if (!st) return;
+    this.fxBuilding(bld, st);
+    if (st === 2 && by?.slot) this.emit({ type: 'popup', text: 'Building destroyed', x, y, color: '#d8c8a0', to: by.slot });
+  }
+
+  fxBuilding(bld: Building, st: number) {
+    const ld = this.listenerDist({ x: bld.cx, y: bld.cy });
+    if (st >= 2) {
+      this.fx.collapse(bld.cx, bld.cy, bld.w, bld.h, bld.ang);
+      audio.explosion(1.1, ld);
+      audio.thud(ld);
+    } else {
+      this.fx.impactDust(bld.cx, bld.cy, true);
+      audio.thud(ld);
+    }
+    this.hooks.building?.(bld);
+    this.netOut?.push({ k: 'bld', id: bld.id, st });
+  }
+
   /** Burning wrecks, dust behind fast carriers (local, host and replica). */
   private carrierFx(dt: number) {
     for (const c of this.carriers) {
@@ -714,6 +739,14 @@ export class Battle {
       case 'cloud':
         if (!this.map.smokes.some((s) => s.id === e.id)) this.map.smokes.push({ id: e.id, x: e.x, y: e.y, r: 1.5, rMax: e.rm, age: 0, life: e.life, team: e.team });
         break;
+      case 'bld': {
+        const bld = this.map.buildings.find((x) => x.id === e.id);
+        if (bld && e.st > bld.dmg) {
+          setBuildingState(this.map, bld, e.st);
+          this.fxBuilding(bld, e.st);
+        }
+        break;
+      }
       case 'cdie': {
         const c = this.carriers.find((x) => x.id === e.id);
         if (c) {
@@ -995,7 +1028,7 @@ export class Battle {
       if (obs && (!best || obs.t < best.t)) {
         const x = a.x + (b.x - a.x) * obs.t;
         const y = a.y + (b.y - a.y) * obs.t;
-        this.obstacleImpact(p, x, y);
+        this.obstacleImpact(p, x, y, false, obs.building);
         continue;
       }
       if (best && best.hit) {
@@ -1023,9 +1056,10 @@ export class Battle {
     this.projectiles = keep;
   }
 
-  private obstacleImpact(p: Projectile, x: number, y: number, soft = false) {
+  private obstacleImpact(p: Projectile, x: number, y: number, soft = false, bld?: Building) {
     const he = p.shell.type === 'HE';
     this.fxObstacle(x, y, p.dx, p.dy, p.shell.caliber, he ? p.shell.explosive : 0, p.id, soft);
+    if (bld) this.hitBuilding(bld, structDamage(p.shell.caliber, p.shell.explosive, he), p.shooter, x, y);
     if (he) {
       this.stampDecal('crater', x, y, 0.6 + Math.cbrt(p.shell.explosive) * 0.12, Math.floor(x * 31 + y));
       this.splash(p, x, y);

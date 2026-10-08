@@ -214,6 +214,7 @@ const ZH: Record<string, string> = {
   'Leaving ends the battle for everyone': '你離開的話，所有人的戰鬥都會結束',
   OFFLINE: '已離線',
   CREW: '補員',
+  'Building destroyed': '建築被轟塌',
   'Crew carrier on the way': '運兵車出發了',
   'Crew replaced': '傷兵已替換',
   'Crew carrier destroyed!': '運兵車被擊毀了！',

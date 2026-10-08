@@ -133,6 +133,7 @@ export class Hud {
   netInfo: string | null = null;
   safe = { l: 0, r: 0, t: 0, b: 0 };
   private minimapBg: HTMLCanvasElement | null = null;
+  private minimapVer = -1;
   /** seconds left for the first-battle controls hint */
   tutorial = 0;
   /** incoming fire direction markers */
@@ -640,7 +641,7 @@ export class Hud {
         break;
       }
       case 'popup':
-        this.r.addPopup(ev.text.replace('Target destroyed', tr('Target destroyed')).replace('Critical hit', tr('Critical hit')).replace('Assist', tr('Assist')).replace('Point captured', tr('Point captured')).replace(/^Hit/, tr('Hit')), ev.x, ev.y, ev.color, !!ev.big);
+        this.r.addPopup(ev.text.replace('Building destroyed', tr('Building destroyed')).replace('Target destroyed', tr('Target destroyed')).replace('Critical hit', tr('Critical hit')).replace('Assist', tr('Assist')).replace('Point captured', tr('Point captured')).replace(/^Hit/, tr('Hit')), ev.x, ev.y, ev.color, !!ev.big);
         break;
       case 'feed': {
         const k = ev.killer;
@@ -823,7 +824,8 @@ export class Hud {
     const x = s.l + 10;
     const y = s.t + 10;
     const sc = size / b.map.size;
-    if (!this.minimapBg) {
+    if (!this.minimapBg || this.minimapVer !== b.map.version) {
+      this.minimapVer = b.map.version;
       const c = makeCanvas(size * 2, size * 2);
       const g = c.getContext('2d')!;
       g.scale((size * 2) / b.map.size, (size * 2) / b.map.size);
@@ -851,8 +853,8 @@ export class Hud {
         g.arc(t.x, t.y, t.r, 0, Math.PI * 2);
         g.fill();
       }
-      g.fillStyle = '#9a9184';
       for (const bd of b.map.buildings) {
+        g.fillStyle = bd.dmg >= 2 ? '#5f5a52' : '#9a9184';
         g.beginPath();
         g.moveTo(bd.poly[0].x, bd.poly[0].y);
         for (const p of bd.poly) g.lineTo(p.x, p.y);

@@ -201,6 +201,27 @@ export class Effects {
     }
   }
 
+  /** A building coming down: a wall of dust over its footprint and a spray of debris. */
+  collapse(cx: number, cy: number, w: number, h: number, ang: number) {
+    const c = Math.cos(ang);
+    const s = Math.sin(ang);
+    const n = Math.round(10 + (w * h) / 10);
+    for (let i = 0; i < n; i++) {
+      const lx = rand.range(-w / 2, w / 2);
+      const ly = rand.range(-h / 2, h / 2);
+      const x = cx + lx * c - ly * s;
+      const y = cy + lx * s + ly * c;
+      const a = rand.range(0, 6.28);
+      const sp = rand.range(0.5, 3.5);
+      this.add({ kind: 'dust', x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: rand.range(2.5, 5), max: 5, size: rand.range(2.5, 5), grow: 1.2, alpha: 0.75, high: true, drag: 1.2 });
+    }
+    for (let i = 0; i < n; i++) {
+      const a = rand.range(0, 6.28);
+      const sp = rand.range(5, 16);
+      this.add({ kind: 'debris', x: cx + rand.range(-w / 3, w / 3), y: cy + rand.range(-h / 3, h / 3), vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: rand.range(0.4, 1.0), max: 1, size: rand.range(0.2, 0.6), drag: 2.5 });
+    }
+  }
+
   fire(x: number, y: number, intensity = 1) {
     this.add({ kind: 'fire', x: x + rand.range(-0.6, 0.6), y: y + rand.range(-0.6, 0.6), vx: this.wind.x * 0.6 + rand.range(-0.4, 0.4), vy: this.wind.y * 0.6 + rand.range(-0.4, 0.4), life: rand.range(0.3, 0.7), max: 0.7, size: rand.range(0.8, 1.8) * intensity, grow: 0.6, high: true, drag: 0.5 });
   }

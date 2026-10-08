@@ -63,6 +63,7 @@ export class BattleRenderer {
     this.mapR = new MapRenderer(b.map, chunkScale, quality === 'high' ? 40 : 28);
     b.hooks.stamp = (d) => this.mapR.stamp(d);
     b.hooks.fellTree = (t, dir) => this.mapR.fellTree(t, dir);
+    b.hooks.building = (bld) => this.mapR.refreshBuilding(bld);
     this.mapR.warm(p.pos.x, p.pos.y, 110);
   }
 

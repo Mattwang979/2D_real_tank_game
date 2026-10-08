@@ -17,6 +17,11 @@ export interface Building {
   roof: 'flat' | 'gable' | 'ruin';
   color: string;
   seed: number;
+  /** structural points; heavy shells knock buildings down */
+  hp: number;
+  maxHp: number;
+  /** 0 intact · 1 damaged (holes in the roof) · 2 collapsed */
+  dmg: number;
 }
 export interface Tree {
   id: number;
@@ -129,10 +134,12 @@ export interface GameMap {
   spawns: [Array<{ x: number; y: number; ang: number }>, Array<{ x: number; y: number; ang: number }>];
   shadow: V2; // shadow offset direction per meter of height
   grid: SpatialGrid;
-  occluders: Array<{ a: V2; b: V2 }>; // vision blocking segments
+  occluders: Array<{ a: V2; b: V2; bid?: number }>; // vision blocking segments (bid: building)
   smokes: SmokeCloud[]; // runtime smoke screens
   berms: Berm[];
   hullDown: HullDownSpot[];
+  /** bumped whenever static geometry changes (a building collapses) */
+  version: number;
 }
 
 export const MAPS: MapDef[] = [
@@ -233,6 +240,7 @@ class Builder {
       smokes: [],
       berms: [],
       hullDown: [],
+      version: 0,
     };
   }
   roadDist(x: number, y: number): number {
@@ -271,11 +279,13 @@ class Builder {
       if (this.overlapsSolid(poly, 3)) return null;
       for (const p of [...poly, { x: cx, y: cy }]) if (this.roadDist(p.x, p.y) < 2.5) return null;
     }
-    const b: Building = { id: this.nextId++, poly, cx, cy, w, h, ang, height, roof, color, seed: this.rng.int(0, 1e9) };
+    const maxHp = Math.round(clamp(w * h * 3.2, 140, 700) * (this.m.theme === 'city' ? 1.2 : 1));
+    const ruin = roof === 'ruin';
+    const b: Building = { id: this.nextId++, poly, cx, cy, w, h, ang, height, roof, color, seed: this.rng.int(0, 1e9), hp: ruin ? 0 : maxHp, maxHp, dmg: ruin ? 2 : 0 };
     this.m.buildings.push(b);
     const bb = aabb(poly);
     this.m.grid.insert({ type: 'b', o: b }, bb.x0, bb.y0, bb.x1, bb.y1);
-    if (roof !== 'ruin') for (let i = 0; i < 4; i++) this.m.occluders.push({ a: poly[i], b: poly[(i + 1) % 4] });
+    if (!ruin) for (let i = 0; i < 4; i++) this.m.occluders.push({ a: poly[i], b: poly[(i + 1) % 4], bid: b.id });
     return b;
   }
   addRock(x: number, y: number, r: number, color: string): Rock | null {
@@ -821,14 +831,16 @@ function segPolyHit(a: V2, b: V2, poly: V2[]): boolean {
 }
 
 /** First obstacle hit by a shell segment: returns t along a→b. */
-export function shellObstacleHit(m: GameMap, a: V2, b: V2): { t: number; kind: 'building' | 'rock' | 'wall' } | null {
+export function shellObstacleHit(m: GameMap, a: V2, b: V2): { t: number; kind: 'building' | 'rock' | 'wall'; building?: Building } | null {
   const near = m.grid.query(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.max(a.x, b.x), Math.max(a.y, b.y));
-  let best: { t: number; kind: 'building' | 'rock' | 'wall' } | null = null;
+  let best: { t: number; kind: 'building' | 'rock' | 'wall'; building?: Building } | null = null;
   for (const o of near) {
     let poly: V2[] | null = null;
     let kind: 'building' | 'rock' | 'wall' = 'building';
+    let building: Building | undefined;
     if (o.type === 'b') {
       poly = o.o.poly;
+      building = o.o;
       if (o.o.roof === 'ruin') continue;
     } else if (o.type === 'r') {
       poly = o.o.poly;
@@ -840,10 +852,42 @@ export function shellObstacleHit(m: GameMap, a: V2, b: V2): { t: number; kind: '
     if (!poly) continue;
     for (let i = 0; i < poly.length; i++) {
       const r = segSeg(a, b, poly[i], poly[(i + 1) % poly.length]);
-      if (r && (!best || r.t < best.t)) best = { t: r.t, kind };
+      if (r && (!best || r.t < best.t)) best = { t: r.t, kind, building };
     }
   }
   return best;
+}
+
+/** Structural damage a shell does to a building. */
+export function structDamage(caliber: number, explosive: number, he: boolean): number {
+  return caliber * 0.3 + Math.cbrt(Math.max(0, explosive)) * (he ? 9 : 3);
+}
+
+/** Apply damage; returns the new damage state when it changed (1 damaged, 2 collapsed), else 0. */
+export function damageBuilding(m: GameMap, bld: Building, amount: number): number {
+  if (bld.dmg >= 2) return 0;
+  bld.hp -= amount;
+  if (bld.hp <= 0) {
+    setBuildingState(m, bld, 2);
+    return 2;
+  }
+  if (bld.dmg === 0 && bld.hp < bld.maxHp * 0.5) {
+    setBuildingState(m, bld, 1);
+    return 1;
+  }
+  return 0;
+}
+
+/** Damaged → holes in the roof; collapsed → a ruin that no longer blocks sight or shells. */
+export function setBuildingState(m: GameMap, bld: Building, st: number) {
+  if (st <= bld.dmg) return;
+  bld.dmg = st;
+  if (st >= 2) {
+    bld.hp = 0;
+    bld.roof = 'ruin';
+    m.occluders = m.occluders.filter((o) => o.bid !== bld.id);
+  }
+  m.version++;
 }
 
 /** Closest point along a→b where the segment crosses an earthwork crest at least `minFrom` metres

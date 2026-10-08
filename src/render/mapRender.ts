@@ -85,7 +85,7 @@ export class MapRenderer {
   decals: Decal[] = [];
   frame = 0;
   private grain: HTMLCanvasElement;
-  private bSprites = new Map<number, { c: HTMLCanvasElement; w: number; h: number }>();
+  private bSprites = new Map<number, { c: HTMLCanvasElement; w: number; h: number; dmg: number }>();
   private treeSprites = new Map<string, HTMLCanvasElement>();
   private pad = 2;
 
@@ -740,7 +740,7 @@ export class MapRenderer {
   // ------------------------------------------------------------------ buildings
   private buildingSprite(b: Building) {
     let sp = this.bSprites.get(b.id);
-    if (sp) return sp;
+    if (sp && sp.dmg === b.dmg) return sp;
     const s = this.scale;
     const pad = 0.6;
     const w = b.w + pad * 2;
@@ -749,9 +749,23 @@ export class MapRenderer {
     const ctx = c.getContext('2d')!;
     ctx.setTransform(s, 0, 0, s, (w / 2) * s, (h / 2) * s);
     drawRoof(ctx, b);
-    sp = { c, w, h };
+    if (b.dmg === 1) drawRoofDamage(ctx, b);
+    sp = { c, w, h, dmg: b.dmg };
     this.bSprites.set(b.id, sp);
     return sp;
+  }
+
+  /** A building changed state: redraw its sprite and the ground chunks under its shadow. */
+  refreshBuilding(b: Building) {
+    this.bSprites.delete(b.id);
+    const reach = Math.max(b.w, b.h) + b.height + 4;
+    for (const [k] of this.chunks) {
+      const [cx, cy] = k.split(',').map(Number);
+      const x0 = cx * CHUNK;
+      const y0 = cy * CHUNK;
+      if (b.cx + reach < x0 || b.cx - reach > x0 + CHUNK || b.cy + reach < y0 || b.cy - reach > y0 + CHUNK) continue;
+      this.chunks.delete(k);
+    }
   }
 
   drawBuildings(ctx: Ctx, x0: number, y0: number, x1: number, y1: number) {
@@ -1001,6 +1015,41 @@ export function drawRoof(ctx: Ctx, b: Building) {
   ctx.strokeStyle = 'rgba(15,12,10,0.75)';
   ctx.lineWidth = 0.14;
   ctx.strokeRect(x, y, w, h);
+}
+
+/** Shell holes punched through a roof, with splintered edges and rubble around them. */
+function drawRoofDamage(ctx: Ctx, b: Building) {
+  const rng = new Rng(b.seed ^ 0x5bd1e995);
+  const n = 2 + Math.round((b.w * b.h) / 60);
+  for (let i = 0; i < n; i++) {
+    const x = rng.range(-b.w / 2 + 1.2, b.w / 2 - 1.2);
+    const y = rng.range(-b.h / 2 + 1.2, b.h / 2 - 1.2);
+    const r = rng.range(0.7, 1.6);
+    // rubble halo
+    for (let k = 0; k < 8; k++) {
+      const a = rng.range(0, Math.PI * 2);
+      const d = r * rng.range(0.9, 1.7);
+      ctx.fillStyle = rng.pick(['#6d6860', '#4f4b45', '#857e72']);
+      ctx.fillRect(x + Math.cos(a) * d - 0.15, y + Math.sin(a) * d - 0.12, rng.range(0.2, 0.45), rng.range(0.15, 0.35));
+    }
+    // jagged hole
+    ctx.fillStyle = '#17140f';
+    ctx.beginPath();
+    const m = 7;
+    for (let k = 0; k < m; k++) {
+      const a = (k / m) * Math.PI * 2;
+      const rr = r * rng.range(0.6, 1.1);
+      const px = x + Math.cos(a) * rr;
+      const py = y + Math.sin(a) * rr;
+      if (k === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(80,60,40,0.8)';
+    ctx.lineWidth = 0.08;
+    ctx.stroke();
+  }
 }
 
 function drawCanopy(ctx: Ctx, r: number, variant: number, shrub: boolean, theme: Theme) {
