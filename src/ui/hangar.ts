@@ -275,7 +275,7 @@ export class Hangar {
     }
     ctx.stroke();
     const cx = W / 2;
-    const cy = 44 + (H - 44 - 84) * 0.5;
+    const cy = 44 + (H - 44 - 84) * 0.46;
     const R = Math.min((H - 44 - 84) * 0.5 - 6, W * 0.25);
     // turntable
     const g2 = ctx.createRadialGradient(cx, cy, R * 0.2, cx, cy, R);
@@ -307,7 +307,7 @@ export class Hangar {
 
     const v = getVehicle(get().selected);
     const L = v.look.L + v.look.gunLen * 0.7;
-    const sc = (R * 1.7) / L;
+    const sc = (R * 1.5) / L;
     ctx.save();
     ctx.translate(cx, cy);
     ctx.scale(sc, sc);
@@ -326,7 +326,7 @@ export class Hangar {
       ctx.restore();
       drawTankVector(ctx, v, this.turret, 0);
     } else if (this.mode === 'armor') {
-      drawArmorView(ctx, v, this.turret, -this.rot);
+      drawArmorView(ctx, v, this.turret, -this.rot, 10.5 / sc);
     } else {
       ctx.save();
       ctx.globalAlpha = 0.18;

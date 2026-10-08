@@ -171,8 +171,8 @@ export class TechTree {
           onclick: () => {
             if (!buy(v.id)) msg.textContent = t('Not enough credits');
             else {
-              toggleLineup(v.id);
-              toast(`${v.name} — ${t('Owned')}`);
+              const r = toggleLineup(v.id);
+              toast(r === 'full' ? `${v.name} — ${t('Owned')} · ${t('Lineup is full (3)')}` : `${v.name} — ${t('Owned')} · ${t('IN LINEUP')}`);
               done();
             }
           },

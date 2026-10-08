@@ -244,7 +244,8 @@ function castDamage(t: Tank, o: V2, d: V2, len: number, dmg: number, acc: Map<nu
   const items: Array<{ t: number; i: number }> = [];
   for (let i = 0; i < t.mods.length; i++) {
     const m = t.mods[i];
-    if (m.def.kind === 'barrel') continue;
+    // tracks and barrel sit outside the armour: interior spall cannot reach them
+    if (m.def.kind === 'barrel' || m.def.kind === 'track') continue;
     if (t.turretOff && m.def.frame !== 'hull') continue;
     const r = rayToFrame(t, m.def.frame, o, d);
     const s = m.def.shape;

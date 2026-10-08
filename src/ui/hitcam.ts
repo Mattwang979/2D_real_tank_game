@@ -106,6 +106,33 @@ export function drawHitCam(ctx: Ctx, e: HitCamEntry, x: number, y: number, w: nu
     ctx.lineTo(en.x + rl.x * 2.6 * pFrag, en.y + rl.y * 2.6 * pFrag);
     ctx.stroke();
   }
+  // spall cone wedge (as in the reference x-ray views)
+  const frags = res.segs.filter((s) => s.kind === 'frag');
+  if (frags.length > 2 && pFrag > 0) {
+    const base = Math.atan2(d.y, d.x);
+    let lo = 0;
+    let hi = 0;
+    let L = 0;
+    for (const f of frags) {
+      const a = Math.atan2(f.b.y - f.a.y, f.b.x - f.a.x);
+      let da = a - base;
+      while (da > Math.PI) da -= Math.PI * 2;
+      while (da < -Math.PI) da += Math.PI * 2;
+      lo = Math.min(lo, da);
+      hi = Math.max(hi, da);
+      L = Math.max(L, Math.hypot(f.b.x - f.a.x, f.b.y - f.a.y));
+    }
+    L *= pFrag;
+    const g = ctx.createRadialGradient(en.x, en.y, 0, en.x, en.y, Math.max(0.1, L));
+    g.addColorStop(0, 'rgba(255,170,60,0.75)');
+    g.addColorStop(1, 'rgba(255,110,30,0.08)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(en.x, en.y);
+    ctx.arc(en.x, en.y, Math.max(0.1, L), base + lo, base + hi);
+    ctx.closePath();
+    ctx.fill();
+  }
   for (const s of res.segs) {
     const pr = s.kind === 'core' ? pCore : pFrag;
     if (pr <= 0) continue;

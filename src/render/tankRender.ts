@@ -1244,7 +1244,7 @@ export function armorColor(eff: number): string {
 }
 
 /** Armor-thickness view: plates drawn as bands along the outline with mm labels. */
-export function drawArmorView(ctx: Ctx, spec: VehicleSpec, turretRel = 0, labelRot = 0) {
+export function drawArmorView(ctx: Ctx, spec: VehicleSpec, turretRel = 0, labelRot = 0, fontM = 0.3) {
   const bp = getBlueprint(spec);
   const A = spec.armor;
   ctx.save();
@@ -1317,17 +1317,17 @@ export function drawArmorView(ctx: Ctx, spec: VehicleSpec, turretRel = 0, labelR
   ctx.restore();
   // de-duplicate labels that overlap
   const placed: Array<{ x: number; y: number }> = [];
-  ctx.font = '700 0.3px "Barlow Condensed", sans-serif';
+  ctx.font = `700 ${fontM}px "Barlow Condensed", sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   for (const lb of labels) {
-    if (placed.some((p) => Math.hypot(p.x - lb.x, p.y - lb.y) < 0.42)) continue;
+    if (placed.some((p) => Math.hypot(p.x - lb.x, p.y - lb.y) < fontM * 1.5)) continue;
     placed.push(lb);
     ctx.save();
     ctx.translate(lb.x, lb.y);
     ctx.rotate(labelRot);
-    ctx.lineWidth = 0.06;
-    ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+    ctx.lineWidth = fontM * 0.22;
+    ctx.strokeStyle = 'rgba(0,0,0,0.6)';
     ctx.strokeText(lb.t, 0, 0);
     ctx.fillStyle = '#f4f6ee';
     ctx.fillText(lb.t, 0, 0);
