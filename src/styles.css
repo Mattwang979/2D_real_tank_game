@@ -845,3 +845,51 @@ input[type='text'] {
     font-size: 12px;
   }
 }
+
+/* very short landscape phones (e.g. 568x320) */
+@media (max-height: 360px) {
+  .topbar {
+    height: calc(38px + var(--sat));
+  }
+  .topbar .logo {
+    font-size: 18px;
+  }
+  .veh-info,
+  .actions {
+    top: calc(44px + var(--sat));
+  }
+  .veh-info .name {
+    font-size: 18px;
+  }
+  .veh-info .stat-group:last-child {
+    display: none;
+  }
+  .actions {
+    bottom: calc(66px + var(--sab));
+    gap: 5px;
+  }
+  .btn.primary {
+    font-size: 20px;
+    padding: 6px 10px;
+  }
+  .btn {
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+  .map-pick button {
+    padding: 4px 3px;
+    font-size: 11px;
+  }
+  .lineup-bar {
+    height: calc(62px + var(--sab));
+  }
+  .slot {
+    height: 52px;
+  }
+  .viewmodes {
+    bottom: calc(68px + var(--sab));
+  }
+  .seg button {
+    padding: 5px 4px;
+  }
+}

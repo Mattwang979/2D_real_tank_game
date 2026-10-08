@@ -1,7 +1,7 @@
 import { chromium } from '/opt/npm-tools/node_modules/playwright/index.mjs';
 const [out] = process.argv.slice(2);
 const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' });
-for (const [w, h, name] of [[667, 375, 'se'], [932, 430, 'promax']]) {
+for (const [w, h, name] of (process.env.SIZES ? JSON.parse(process.env.SIZES) : [[667, 375, 'se'], [932, 430, 'promax']])) {
   const ctx = await browser.newContext({ viewport: { width: w, height: h }, deviceScaleFactor: 2, hasTouch: true, isMobile: true });
   const page = await ctx.newPage();
   page.on('pageerror', (e) => console.log('[pageerror]', e.message));

@@ -248,7 +248,7 @@ export class Hud {
     this.hitcams = this.hitcams.filter((h) => h.t < h.life);
     this.fireFlash = Math.max(0, this.fireFlash - dt);
     if (this.deathInfo) this.deathInfo.t += dt;
-    if (this.tutorial > 0) this.tutorial -= dt;
+    if (this.tutorial > 0 && b.time > 4.6) this.tutorial -= dt;
 
     if (!p || !p.alive) {
       this.move = null;
@@ -428,7 +428,7 @@ export class Hud {
       const win = b.result === 'victory';
       this.drawBanner(ctx, W, H, tr(win ? 'VICTORY' : 'DEFEAT'), win ? tr('The enemy has been defeated') : tr('Your team has been defeated'), win ? '#f2b449' : '#e8473b', 1);
     }
-    if (this.tutorial > 0 && b.state === 'playing') this.drawTutorial(ctx, W, H);
+    if (this.tutorial > 0 && b.state === 'playing' && b.time > 4.6) this.drawTutorial(ctx, W, H);
     ctx.restore();
   }
 
@@ -925,9 +925,8 @@ export class Hud {
       ctx.font = '500 12px "Barlow Condensed", sans-serif';
       ctx.fillText(sub, x, y + 11);
     };
-    box(W * 0.22, H * 0.62, tr('◀ DRAG TO DRIVE'), tr('Push where you want to go · pull back to reverse'));
-    box(W * 0.66, H * 0.42, tr('DRAG TO AIM ▶'), tr('Release to fire · tap to fire'));
-    box(W * 0.45, H * 0.74, tr('Capture point A'), tr('Green reticle = will penetrate'));
+    box(W * 0.24, H * 0.6, tr('◀ DRAG TO DRIVE'), tr('Push where you want to go · pull back to reverse'));
+    box(W * 0.66, H * 0.38, tr('DRAG TO AIM ▶'), tr('Release to fire · green reticle = will penetrate'));
     ctx.restore();
   }
 

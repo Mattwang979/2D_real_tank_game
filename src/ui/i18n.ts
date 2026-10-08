@@ -139,6 +139,7 @@ const ZH: Record<string, string> = {
   'Push where you want to go · pull back to reverse': '往要去的方向推 · 往後拉倒車',
   'DRAG TO AIM ▶': '拖曳瞄準 ▶',
   'Release to fire · tap to fire': '放開開火 · 點一下也能開火',
+  'Release to fire · green reticle = will penetrate': '放開開火 · 準星綠色＝打得穿',
   'Capture point A': '佔領 A 點',
   'Green reticle = will penetrate': '準星綠色＝打得穿',
 };

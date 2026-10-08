@@ -274,9 +274,11 @@ export class Hangar {
       ctx.lineTo(W, y);
     }
     ctx.stroke();
+    const top = H <= 360 ? 38 : 44;
+    const bottom = H <= 360 ? 62 : 84;
     const cx = W / 2;
-    const cy = 44 + (H - 44 - 84) * 0.46;
-    const R = Math.min((H - 44 - 84) * 0.5 - 6, W * 0.25);
+    const cy = top + (H - top - bottom) * 0.46;
+    const R = Math.min((H - top - bottom) * 0.5 - 6, W * 0.25);
     // turntable
     const g2 = ctx.createRadialGradient(cx, cy, R * 0.2, cx, cy, R);
     g2.addColorStop(0, '#45473f');
