@@ -6,7 +6,7 @@ const page = await browser.newPage({ viewport: { width: 844, height: 390 } });
 page.on('pageerror', (e) => console.log('[pageerror]', e.message, e.stack?.split('\n').slice(0, 5).join(' | ')));
 await page.goto('http://localhost:5173/');
 await page.waitForTimeout(800);
-await page.evaluate(([m, lu]) => { const s = window.__pen.save(); s.settings.map = m; if (lu) s.lineup = lu.split(','); }, [map, process.env.LINEUP || '']);
+await page.evaluate(([m, lu, w]) => { const s = window.__pen.save(); s.settings.map = m; s.settings.weather = w; if (lu) s.lineup = lu.split(','); }, [map, process.env.LINEUP || '', process.env.W || 'clear']);
 await page.evaluate(() => window.__pen.startBattle());
 await page.waitForTimeout(1500);
 const res = await page.evaluate(async (secs) => {
@@ -38,7 +38,7 @@ const res = await page.evaluate(async (secs) => {
   }
   const ms = performance.now() - t0;
   const ais = [...b.ais.values()].map(a => ({ id: a.tank.spec.id, team: a.tank.team, pos: [a.tank.pos.x|0, a.tank.pos.y|0], goal: a.goal && [a.goal.x|0, a.goal.y|0], path: a.path.length, role: a.role, tgt: a.target && a.target.spec.id, rev: a.reverse > 0 }));
-  return { simMs: Math.round(ms), time: b.time.toFixed(0), state: b.state, result: b.result, playerTeam: b.playerTeam, tickets: b.tickets.map(Math.round), reinf: b.reinforcements, stats: b.stats, totals: b.totals(), log: log.slice(0, 60), ais, outcomes: out, medDist: dists.sort((a,b)=>a-b)[dists.length>>1], maxDist: Math.max(...dists), shots: b.tanks.reduce((a, t) => a + t.spec.gun.shells.reduce((x, s, i) => x + (s.count - t.ammo[i]), 0), 0) };
+  return { weather: b.weather.id, flaresLeft: b.tanks.reduce((a, t) => a + t.flareCharges, 0), simMs: Math.round(ms), time: b.time.toFixed(0), state: b.state, result: b.result, playerTeam: b.playerTeam, tickets: b.tickets.map(Math.round), reinf: b.reinforcements, stats: b.stats, totals: b.totals(), log: log.slice(0, 60), ais, outcomes: out, medDist: dists.sort((a,b)=>a-b)[dists.length>>1], maxDist: Math.max(...dists), shots: b.tanks.reduce((a, t) => a + t.spec.gun.shells.reduce((x, s, i) => x + (s.count - t.ammo[i]), 0), 0) };
 }, +seconds);
 console.log(JSON.stringify(res, null, 1));
 await browser.close();

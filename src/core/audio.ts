@@ -232,6 +232,104 @@ class Audio {
     lfo.stop(t + dur + 0.1);
   }
 
+  /** Flare launcher: a hollow pop and the fizz of the rising flare. */
+  flare(dist: number) {
+    if (!this.ctx || !this.master) return;
+    const g0 = this.att(dist) * 0.55;
+    if (g0 < 0.02) return;
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(330, t);
+    o.frequency.exponentialRampToValueAtTime(85, t + 0.13);
+    const og = this.ctx.createGain();
+    og.gain.setValueAtTime(g0, t);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+    o.connect(og).connect(this.master);
+    o.start(t);
+    o.stop(t + 0.2);
+    const n = this.noiseSrc()!;
+    const hp = this.ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 2600;
+    const ng = this.ctx.createGain();
+    ng.gain.setValueAtTime(0.0001, t);
+    ng.gain.linearRampToValueAtTime(g0 * 0.22, t + 0.05);
+    ng.gain.exponentialRampToValueAtTime(0.001, t + 1.3);
+    n.connect(hp).connect(ng).connect(this.master);
+    n.start(t, Math.random());
+    n.stop(t + 1.35);
+  }
+
+  private amb: { nodes: AudioScheduledSourceNode[]; gain: GainNode } | null = null;
+
+  /** Looping weather ambience: rain, or nothing. */
+  ambience(kind: 'rain' | null) {
+    if (!this.ctx || !this.master) return;
+    const t = this.ctx.currentTime;
+    if (this.amb) {
+      const old = this.amb;
+      old.gain.gain.setTargetAtTime(0, t, 0.3);
+      for (const n of old.nodes) n.stop(t + 1.5);
+      this.amb = null;
+    }
+    if (kind !== 'rain') return;
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(1, t + 2.5);
+    gain.connect(this.master);
+    // steady wash of rain
+    const a = this.noiseSrc()!;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 1700;
+    const hp = this.ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 280;
+    const ga = this.ctx.createGain();
+    ga.gain.value = 0.06;
+    a.connect(hp).connect(lp).connect(ga).connect(gain);
+    // patter on the hull
+    const b = this.noiseSrc()!;
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 4200;
+    bp.Q.value = 0.8;
+    const gb = this.ctx.createGain();
+    gb.gain.value = 0.022;
+    const lfo = this.ctx.createOscillator();
+    lfo.frequency.value = 0.31;
+    const lg = this.ctx.createGain();
+    lg.gain.value = 0.008;
+    lfo.connect(lg).connect(gb.gain);
+    b.connect(bp).connect(gb).connect(gain);
+    a.start(t, Math.random());
+    b.start(t, Math.random());
+    lfo.start(t);
+    this.amb = { nodes: [a, b, lfo], gain };
+  }
+
+  /** Thunder rolling in `delay` seconds after a lightning flash. */
+  thunder(delay: number, loud = 1) {
+    if (!this.ctx || !this.master) return;
+    const t = this.ctx.currentTime + delay;
+    const n = this.noiseSrc()!;
+    const f = this.ctx.createBiquadFilter();
+    f.type = 'lowpass';
+    f.frequency.setValueAtTime(delay < 1.2 ? 900 : 420, t);
+    f.frequency.exponentialRampToValueAtTime(70, t + 3.2);
+    const g = this.ctx.createGain();
+    const peak = 0.55 * loud * (delay < 1.2 ? 1 : 0.7);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(peak, t + 0.12);
+    g.gain.linearRampToValueAtTime(peak * 0.45, t + 0.7);
+    g.gain.linearRampToValueAtTime(peak * 0.6, t + 1.1);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 3.8);
+    n.connect(f).connect(g).connect(this.master);
+    n.start(t, Math.random());
+    n.stop(t + 3.9);
+  }
+
   /** Radio squelch before a callout. */
   radio() {
     if (!this.ctx || !this.master || !this.throttle('radio', 250)) return;

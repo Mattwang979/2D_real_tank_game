@@ -49,6 +49,8 @@ export interface MeState {
   cr?: string | null; // pending swap role
   fq?: number; // queued shot
   cc?: number; // crew carrier cooldown
+  fl?: number; // flares left
+  fd?: number; // flare cooldown
   su?: [number, number, number]; // support: recon, artillery, streak
   rw?: RewardLine[]; // new reward lines since the last snapshot
   st?: SlotStats;
@@ -85,8 +87,8 @@ export type NetEvent =
 export type HostMsg =
   | { t: 'welcome'; key: string }
   | { t: 'reject'; reason: 'full' | 'started' | 'version' }
-  | { t: 'lobby'; players: LobbyPlayer[]; mapId: string; code: string }
-  | { t: 'start'; mapId: string; seed: number; slots: Array<{ key: string; name: string; lineup: string[]; team: 0 | 1 }> }
+  | { t: 'lobby'; players: LobbyPlayer[]; mapId: string; code: string; weather?: string }
+  | { t: 'start'; mapId: string; seed: number; weather?: string; slots: Array<{ key: string; name: string; lineup: string[]; team: 0 | 1 }> }
   | { t: 'u'; n?: TankInfo[]; s?: Snapshot; fx?: NetFx[]; ev?: NetEvent[] }
   | { t: 'end'; winner: 0 | 1 }
   | { t: 'pong'; c: number }
@@ -102,6 +104,7 @@ export type ClientMsg =
   | { t: 'act'; a: 'arty'; x: number; y: number }
   | { t: 'act'; a: 'shell'; i: number }
   | { t: 'act'; a: 'smoke'; ang: number }
+  | { t: 'act'; a: 'flare'; ang: number }
   | { t: 'act'; a: 'spawn'; id: string }
   | { t: 'ping'; c: number }
   | { t: 'leave' };

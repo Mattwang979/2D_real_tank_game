@@ -8,6 +8,7 @@ export interface Settings {
   quality: 'high' | 'low';
   volume: number;
   map: string; // 'random' or map id
+  weather: string; // 'random' or weather id
 }
 
 export interface SaveData {
@@ -40,7 +41,7 @@ function fresh(): SaveData {
     lineup: ['m4a2', 'pz4h', 't34_41'],
     researching: null,
     selected: 'm4a2',
-    settings: { lang: navigator.language?.toLowerCase().startsWith('zh') ? 'zh' : 'en', quality: 'high', volume: 0.8, map: 'random' },
+    settings: { lang: navigator.language?.toLowerCase().startsWith('zh') ? 'zh' : 'en', quality: 'high', volume: 0.8, map: 'random', weather: 'random' },
     stats: { battles: 0, wins: 0, kills: 0 },
   };
 }

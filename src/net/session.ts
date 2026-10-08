@@ -7,6 +7,7 @@
 import type { ImpactResult } from '../game/armor';
 import { Battle, type BattleEvent, type NetFx, type PlayerSlot } from '../game/battle';
 import { MAPS } from '../game/map';
+import { isWeatherId, pickWeather } from '../game/weather';
 import { Tank } from '../game/tank';
 import { audio } from '../core/audio';
 import { VEHICLES, getVehicle } from '../data/vehicles';
@@ -76,19 +77,23 @@ export class HostRoom {
   players: LobbyPlayer[];
   conns = new Map<string, DataConnection>();
   mapId: string;
+  /** 'random' or a weather id */
+  weather = 'random';
   phase: 'lobby' | 'game' | 'closed' = 'lobby';
   game: HostGame | null = null;
   onChange: () => void = () => {};
   onPlayerLeft: (name: string) => void = () => {};
   private nextKey = 1;
 
-  static async create(name: string, lineup: string[], mapId: string): Promise<HostRoom> {
+  static async create(name: string, lineup: string[], mapId: string, weather = 'random'): Promise<HostRoom> {
     let last: unknown = null;
     for (let i = 0; i < 5; i++) {
       const code = makeCode();
       try {
         const peer = await openPeer(ROOM_PREFIX + code);
-        return new HostRoom(peer, code, name, lineup, mapId);
+        const room = new HostRoom(peer, code, name, lineup, mapId);
+        room.weather = weather;
+        return room;
       } catch (e) {
         last = e;
         if (e instanceof NetError && e.kind === 'unavailable-id') continue;
@@ -192,6 +197,11 @@ export class HostRoom {
     this.broadcastLobby();
   }
 
+  setWeather(id: string) {
+    this.weather = isWeatherId(id) ? id : 'random';
+    this.broadcastLobby();
+  }
+
   /** Host-side team switch (host itself or moving another player). */
   setTeam(key: string, team: 0 | 1) {
     const p = this.players.find((x) => x.key === key);
@@ -206,7 +216,7 @@ export class HostRoom {
   }
 
   broadcastLobby() {
-    const msg: HostMsg = { t: 'lobby', players: this.players, mapId: this.mapId, code: this.code };
+    const msg: HostMsg = { t: 'lobby', players: this.players, mapId: this.mapId, code: this.code, weather: this.weather };
     for (const c of this.conns.values()) send(c, msg);
     this.onChange();
   }
@@ -216,9 +226,10 @@ export class HostRoom {
     this.phase = 'game';
     const mapId = this.mapId === 'random' ? MAPS[Math.floor(Math.random() * MAPS.length)].id : this.mapId;
     const seed = 1 + Math.floor(Math.random() * 1e6);
+    const weather = pickWeather(this.weather);
     const slots = this.players.map((p) => ({ key: p.key, name: p.name, lineup: p.lineup, team: p.team }));
-    for (const c of this.conns.values()) send(c, { t: 'start', mapId, seed, slots });
-    const b = new Battle({ mapId, seed, slots, localKey: 'host', mode: 'host' });
+    for (const c of this.conns.values()) send(c, { t: 'start', mapId, seed, weather, slots });
+    const b = new Battle({ mapId, seed, slots, localKey: 'host', mode: 'host', weather });
     this.game = new HostGame(this, b);
     return b;
   }
@@ -288,6 +299,7 @@ class HostGame implements NetSession {
         } else if (m.a === 'cancel') t.fireReq = null;
         else if (m.a === 'shell') b.selectShell(t, Number(m.i) | 0);
         else if (m.a === 'smoke') b.useSmoke(t, Number(m.ang));
+        else if (m.a === 'flare') b.useFlare(t, Number(m.ang));
         else if (m.a === 'boost') b.useBoost(t);
         else if (m.a === 'repair') b.useRepair(t);
         else if (m.a === 'crew') b.useCrew(t);
@@ -467,6 +479,10 @@ class HostGame implements NetSession {
       me.cr = t.pendingSwapRole;
       me.fq = t.fireReq ? 1 : 0;
       me.cc = r2(t.crewCd);
+      if (this.b.weather.flares > 0) {
+        me.fl = t.flareCharges;
+        me.fd = r2(t.flareCd);
+      }
     }
     // players keep their support in the slot
     me.su = [s.support.recon, s.support.arty, t ? t.streak : 0];
@@ -503,6 +519,7 @@ export class ClientRoom {
   key: string | null = null;
   players: LobbyPlayer[] = [];
   mapId = 'random';
+  weather = 'random';
   phase: 'lobby' | 'game' | 'closed' = 'lobby';
   game: ClientGame | null = null;
   onChange: () => void = () => {};
@@ -571,12 +588,13 @@ export class ClientRoom {
       case 'lobby':
         this.players = m.players;
         this.mapId = m.mapId;
+        this.weather = isWeatherId(m.weather) ? m.weather : 'random';
         this.onChange();
         break;
       case 'start':
         if (!this.key) return;
         this.phase = 'game';
-        this.game = new ClientGame(this, new Battle({ mapId: m.mapId, seed: m.seed, slots: m.slots, localKey: this.key, mode: 'replica' }));
+        this.game = new ClientGame(this, new Battle({ mapId: m.mapId, seed: m.seed, slots: m.slots, localKey: this.key, mode: 'replica', weather: isWeatherId(m.weather) ? m.weather : 'clear' }));
         this.onStart(this.game);
         break;
       case 'closed':
@@ -672,6 +690,7 @@ export class ClientGame implements NetSession {
         act({ t: 'act', a: 'shell', i });
       },
       smoke: (ang) => act({ t: 'act', a: 'smoke', ang: r3(ang) }),
+      flare: (ang) => act({ t: 'act', a: 'flare', ang: r3(ang) }),
       boost: () => act({ t: 'act', a: 'boost' }),
       repair: () => act({ t: 'act', a: 'repair' }),
       crew: () => act({ t: 'act', a: 'crew' }),
@@ -720,6 +739,7 @@ export class ClientGame implements NetSession {
     if (this.byId.has(i.id)) return;
     const t = new Tank(getVehicle(i.s), i.tm, { x: i.x, y: i.y }, i.a, i.nm);
     t.id = i.id;
+    this.b.equip(t);
     t.slot = i.sl;
     t.isPlayer = !!i.sl && i.sl === this.b.localKey;
     this.b.tanks.push(t);
@@ -815,6 +835,8 @@ export class ClientGame implements NetSession {
         t.pendingSwapRole = (me.cr ?? null) as typeof t.pendingSwapRole;
         if (!me.fq && t.fireReq && performance.now() - this.fireSentAt > this.rtt + 150) t.fireReq = null;
         t.crewCd = me.cc ?? 0;
+        if (me.fl !== undefined) t.flareCharges = me.fl;
+        t.flareCd = me.fd ?? 0;
       }
     }
     if (me.su) {

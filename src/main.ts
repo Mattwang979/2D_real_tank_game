@@ -9,6 +9,7 @@ import { audio } from './core/audio';
 import { get } from './core/save';
 import { Battle } from './game/battle';
 import { MAPS, type MapDef } from './game/map';
+import { pickWeather, WEATHERS, type WeatherId } from './game/weather';
 import type { ClientGame, ClientRoom, HostRoom, NetSession } from './net/session';
 import { BattleRenderer } from './render/battleRender';
 import { confirmBox, h, modal, settingsMenu, toast } from './ui/common';
@@ -119,9 +120,12 @@ let rafId = 0;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function showLoading(def: MapDef) {
+async function showLoading(def: MapDef, weather?: WeatherId) {
   loading.innerHTML = '';
-  loading.append(h('div', { style: 'color:var(--dim);font-size:14px' }, t('Loading')), h('div', { class: 'mapname' }, t(def.name).toUpperCase()), h('div', { class: 'bar' }, h('i')));
+  const w = weather ? WEATHERS[weather] : null;
+  loading.append(h('div', { style: 'color:var(--dim);font-size:14px' }, t('Loading')), h('div', { class: 'mapname' }, t(def.name).toUpperCase()));
+  if (w) loading.append(h('div', { class: 'mapweather' }, `${w.icon} ${t(w.name)} · ${t(w.info)}`));
+  loading.append(h('div', { class: 'bar' }, h('i')));
   loading.style.display = 'flex';
   await sleep(60);
 }
@@ -130,17 +134,17 @@ async function startBattle() {
   const s = get();
   audio.unlock();
   const mapDef = s.settings.map === 'random' ? MAPS[Math.floor(Math.random() * MAPS.length)] : MAPS.find((m) => m.id === s.settings.map) ?? MAPS[0];
-  await showLoading(mapDef);
-  const b = new Battle({ mapId: mapDef.id, lineup: s.lineup, playerName: s.playerName, seed: 1234 });
+  const weather = pickWeather(s.settings.weather);
+  await showLoading(mapDef, weather);
+  const b = new Battle({ mapId: mapDef.id, lineup: s.lineup, playerName: s.playerName, seed: 1234, weather });
   await runBattle(b, null);
 }
 
 async function startHostBattle(room: HostRoom) {
   audio.unlock();
   lobby.inBattle = true;
-  const mapDef = MAPS.find((m) => m.id === room.mapId);
-  await showLoading(mapDef ?? { id: 'random', name: 'Random', theme: 'grass', size: 440 });
   const b = room.start();
+  await showLoading(b.map.def, b.weather.id);
   await runBattle(b, room.game);
 }
 
@@ -148,7 +152,7 @@ async function startClientBattle(room: ClientRoom, game: ClientGame) {
   audio.unlock();
   lobby.inBattle = true;
   if (current === 'battle') return; // already in a battle (should not happen)
-  await showLoading(game.b.map.def);
+  await showLoading(game.b.map.def, game.b.weather.id);
   const ok = await Promise.race([game.ready.then(() => true), sleep(10000).then(() => false)]);
   if (!ok || room.phase === 'closed') {
     loading.style.display = 'none';
@@ -179,6 +183,7 @@ async function runBattle(b: Battle, session: NetSession | null) {
   paused = false;
   endedAt = -1;
   audio.engineStart();
+  audio.ambience(b.weather.id === 'rain' ? 'rain' : null);
   loading.style.display = 'none';
   let last = performance.now();
   let slow = 0;
@@ -272,6 +277,7 @@ function finishBattle() {
   cancelAnimationFrame(rafId);
   hud?.destroy();
   audio.engineStop();
+  audio.ambience(null);
   battle = null;
   renderer = null;
   hud = null;

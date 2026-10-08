@@ -12,6 +12,7 @@ import type { Battle, BattleEvent } from '../game/battle';
 import { BATTLE_TIME, TICKETS } from '../game/battle';
 import { CARRIER } from '../game/carrier';
 import { ARTY } from '../game/support';
+import { FLARE, flareLight } from '../game/weather';
 import { bermCover } from '../game/map';
 import { Tank } from '../game/tank';
 import { TEAM_COL, predColor, type BattleRenderer } from '../render/battleRender';
@@ -27,6 +28,7 @@ export interface Controls {
   cancelFire(): void;
   shell(i: number): void;
   smoke(ang: number): void;
+  flare(ang: number): void;
   boost(): void;
   repair(): void;
   crew(): void;
@@ -53,6 +55,10 @@ export function localControls(b: Battle): Controls {
     smoke: (a) => {
       const p = me();
       if (p) b.useSmoke(p, a);
+    },
+    flare: (a) => {
+      const p = me();
+      if (p) b.useFlare(p, a);
     },
     boost: () => {
       const p = me();
@@ -120,7 +126,8 @@ export class Hud {
   controls: Controls;
   move: Stick | null = null;
   fireStick: Stick | null = null;
-  smokeStick: Stick | null = null;
+  /** smoke or flare button dragged like a joystick to pick the direction */
+  throwStick: (Stick & { kind: 'smoke' | 'flare' }) | null = null;
   /** zoomed in: finger on the battlefield lays the gun on that spot */
   sight: { id: number; pos: V2 } | null = null;
   private free = new Map<number, V2>();
@@ -241,6 +248,7 @@ export class Hud {
   /** Which situational buttons to show on the outer arc. */
   private outerIds(p: Tank): string[] {
     const ids: string[] = [];
+    if (this.b.weather.flares > 0) ids.push('flare');
     const st = this.b.supportOf(p);
     if (st.recon > 0) ids.push('recon');
     if (st.arty > 0) ids.push('arty');
@@ -291,15 +299,15 @@ export class Hud {
     this.free.delete(e.pointerId);
     if (this.move?.id === e.pointerId) this.move = null;
     if (this.fireStick?.id === e.pointerId) this.fireStick = null;
-    if (this.smokeStick?.id === e.pointerId) this.smokeStick = null;
+    if (this.throwStick?.id === e.pointerId) this.throwStick = null;
     if (this.sight?.id === e.pointerId) this.endSight();
     const p = this.pt(e);
     this.layout();
     const btn = this.hitButton(p.x, p.y);
     if (btn) {
-      if (btn.id === 'smoke' && this.playing()) {
-        if (!this.smokeStick) {
-          this.smokeStick = this.newStick(e, { x: btn.x, y: btn.y }, p);
+      if ((btn.id === 'smoke' || btn.id === 'flare') && this.playing()) {
+        if (!this.throwStick) {
+          this.throwStick = { ...this.newStick(e, { x: btn.x, y: btn.y }, p), kind: btn.id };
           this.capture(e);
         }
         return;
@@ -392,8 +400,8 @@ export class Hud {
       const was = this.fireStick.moved;
       this.stickMove(this.fireStick, p, this.fireDZ());
       if (!was && this.fireStick.moved && this.b.player?.fireReq) this.controls.cancelFire();
-    } else if (this.smokeStick && e.pointerId === this.smokeStick.id) {
-      this.stickMove(this.smokeStick, p, 16);
+    } else if (this.throwStick && e.pointerId === this.throwStick.id) {
+      this.stickMove(this.throwStick, p, 16);
     } else if (this.free.has(e.pointerId)) {
       this.free.set(e.pointerId, p);
       if (this.sight && this.sight.id === e.pointerId) this.sight.pos = p;
@@ -428,10 +436,11 @@ export class Hud {
       const st = this.fireStick;
       this.fireStick = null;
       this.releaseFire(st);
-    } else if (this.smokeStick && e.pointerId === this.smokeStick.id) {
-      const st = this.smokeStick;
-      this.smokeStick = null;
-      this.releaseSmoke(st);
+    } else if (this.throwStick && e.pointerId === this.throwStick.id) {
+      const st = this.throwStick;
+      this.throwStick = null;
+      if (st.kind === 'flare') this.releaseFlare(st);
+      else this.releaseSmoke(st);
     } else if (this.free.has(e.pointerId)) {
       this.free.delete(e.pointerId);
       if (this.sight?.id === e.pointerId) this.endSight();
@@ -488,6 +497,19 @@ export class Hud {
     if (!p.canSmoke()) return;
     const a = st.moved ? this.settledAngle(st) : p.gunWorldAng;
     this.controls.smoke(a);
+    audio.click();
+  }
+
+  private releaseFlare(st: Stick) {
+    const p = this.b.player;
+    if (!p || !p.alive || this.b.state !== 'playing') return;
+    if (st.moved && dist(st.pos, st.base) < 16) return;
+    if (p.flareCharges <= 0) {
+      this.note(tr('No flares left'), '#c8c8c0');
+      return;
+    }
+    if (!p.canFlare()) return;
+    this.controls.flare(st.moved ? this.settledAngle(st) : p.gunWorldAng);
     audio.click();
   }
 
@@ -583,7 +605,7 @@ export class Hud {
     if (!p || !p.alive || b.state !== 'playing') {
       this.move = null;
       this.fireStick = null;
-      this.smokeStick = null;
+      this.throwStick = null;
       this.brakeHeld = false;
       this.targeting = false;
       this.aimPt = null;
@@ -785,7 +807,7 @@ export class Hud {
     if (live && p) {
       this.drawIncoming(ctx, p);
       this.drawOwnMarker(ctx, p);
-      this.drawSmokePreview(ctx, p);
+      this.drawThrowPreview(ctx, p);
       this.drawPenInfo(ctx, W, s);
       this.drawDriveHint(ctx, p);
       this.drawMoveStick(ctx, p);
@@ -818,7 +840,11 @@ export class Hud {
       ctx.restore();
     }
     if (b.state === 'dead') this.drawDeath(ctx, W, H, s);
-    if (b.time < 4.5 && b.state === 'playing') this.drawBanner(ctx, W, H, tr('DOMINATION'), tr('Capture and hold point A'), '#f2b449', b.time < 0.4 ? b.time / 0.4 : b.time > 3.7 ? (4.5 - b.time) / 0.8 : 1);
+    if (b.time < 4.5 && b.state === 'playing') {
+      const w = b.weather;
+      const sub2 = w.id === 'clear' ? undefined : `${w.icon} ${tr(w.name)} · ${tr(w.info)}`;
+      this.drawBanner(ctx, W, H, tr('DOMINATION'), tr('Capture and hold point A'), '#f2b449', b.time < 0.4 ? b.time / 0.4 : b.time > 3.7 ? (4.5 - b.time) / 0.8 : 1, sub2);
+    }
     if (b.state === 'ended') {
       const win = b.result === 'victory';
       this.drawBanner(ctx, W, H, tr(win ? 'VICTORY' : 'DEFEAT'), win ? tr('The enemy has been defeated') : tr('Your team has been defeated'), win ? '#f2b449' : '#e8473b', 1);
@@ -984,6 +1010,20 @@ export class Hud {
     for (const sm of b.map.smokes) {
       ctx.beginPath();
       ctx.arc(x + sm.x * sc, y + sm.y * sc, Math.max(1.5, sm.r * sc), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // flares burning in the night sky
+    for (const f of b.flares) {
+      if (f.t < FLARE.FLIGHT) continue;
+      const l = flareLight(f);
+      if (l.k < 0.05) continue;
+      ctx.fillStyle = `rgba(255,230,160,${0.18 * l.k})`;
+      ctx.beginPath();
+      ctx.arc(x + l.x * sc, y + l.y * sc, l.r * sc, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,245,210,0.95)';
+      ctx.beginPath();
+      ctx.arc(x + l.x * sc, y + l.y * sc, 1.6, 0, Math.PI * 2);
       ctx.fill();
     }
     // capture
@@ -1199,8 +1239,8 @@ export class Hud {
     ctx.restore();
   }
 
-  private drawSmokePreview(ctx: Ctx, p: Tank) {
-    const st = this.smokeStick;
+  private drawThrowPreview(ctx: Ctx, p: Tank) {
+    const st = this.throwStick;
     if (!st) return;
     const out = st.moved && dist(st.pos, st.base) >= 16;
     if (st.moved && !out) return;
@@ -1209,6 +1249,24 @@ export class Hud {
     const z = this.r.zoom;
     ctx.save();
     ctx.setLineDash([4, 4]);
+    if (st.kind === 'flare') {
+      // where the flare will burst and the ground it will light up
+      const c = this.r.toScreen({ x: tp.x + Math.cos(a) * FLARE.RANGE, y: tp.y + Math.sin(a) * FLARE.RANGE });
+      const o = this.r.toScreen(tp);
+      ctx.strokeStyle = 'rgba(255,226,160,0.75)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(o.x + Math.cos(a) * 30, o.y + Math.sin(a) * 30);
+      ctx.lineTo(c.x, c.y);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(255,226,160,0.1)';
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, FLARE.RADIUS * z, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+      return;
+    }
     for (const off of [-0.22, 0, 0.22]) {
       const w = { x: tp.x + Math.cos(a + off) * 24.5, y: tp.y + Math.sin(a + off) * 24.5 };
       const sp = this.r.toScreen(w);
@@ -1642,22 +1700,13 @@ export class Hud {
         const on = p.boostT > 0;
         this.drawAbility(ctx, bt, tr('BOOST'), { active: on, cd: on ? 0 : p.boostCd / Tank.BOOST_CD, dim: !p.canMove() && !on, sub: on ? `${p.boostT.toFixed(1)}` : p.boostCd > 0 ? `${Math.ceil(p.boostCd)}` : undefined });
       } else if (bt.id === 'smoke') {
-        const st = this.smokeStick;
+        const st = this.throwStick?.kind === 'smoke' ? this.throwStick : null;
         this.drawAbility(ctx, bt, tr('SMOKE'), { active: !!st, cd: p.smokeCd / 4, dim: p.smokeCharges <= 0, badge: String(p.smokeCharges) });
-        if (st && st.moved && dist(st.pos, st.base) >= 16) {
-          const kl = Math.min(dist(st.pos, st.base), this.fireC.r);
-          ctx.save();
-          ctx.strokeStyle = 'rgba(240,240,235,0.35)';
-          ctx.lineWidth = 1.5;
-          ctx.beginPath();
-          ctx.arc(bt.x, bt.y, this.fireC.r, 0, Math.PI * 2);
-          ctx.stroke();
-          ctx.fillStyle = 'rgba(240,240,235,0.75)';
-          ctx.beginPath();
-          ctx.arc(bt.x + Math.cos(st.ang) * kl, bt.y + Math.sin(st.ang) * kl, bt.r! * 0.55, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.restore();
-        }
+        if (st && st.moved && dist(st.pos, st.base) >= 16) this.drawThrowKnob(ctx, bt, st);
+      } else if (bt.id === 'flare') {
+        const st = this.throwStick?.kind === 'flare' ? this.throwStick : null;
+        this.drawAbility(ctx, bt, tr('FLARE'), { active: !!st, fill: 'rgba(90,70,30,0.8)', cd: p.flareCd / FLARE.CD, dim: p.flareCharges <= 0, badge: String(p.flareCharges), sub: p.flareCd > 0 ? `${Math.ceil(p.flareCd)}` : undefined });
+        if (st && st.moved && dist(st.pos, st.base) >= 16) this.drawThrowKnob(ctx, bt, st);
       } else if (bt.id === 'recon') {
         this.drawAbility(ctx, bt, tr('RECON'), { fill: 'rgba(40,70,110,0.8)', pulse: 'rgba(160,215,255,1)' });
       } else if (bt.id === 'arty') {
@@ -1685,7 +1734,23 @@ export class Hud {
     }
   }
 
-  private drawBanner(ctx: Ctx, W: number, H: number, title: string, sub: string, color: string, a: number) {
+  /** Knob of a smoke / flare button being dragged to pick the direction. */
+  private drawThrowKnob(ctx: Ctx, bt: Btn, st: Stick) {
+    const kl = Math.min(dist(st.pos, st.base), this.fireC.r);
+    ctx.save();
+    ctx.strokeStyle = 'rgba(240,240,235,0.35)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(bt.x, bt.y, this.fireC.r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(240,240,235,0.75)';
+    ctx.beginPath();
+    ctx.arc(bt.x + Math.cos(st.ang) * kl, bt.y + Math.sin(st.ang) * kl, bt.r! * 0.55, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  private drawBanner(ctx: Ctx, W: number, H: number, title: string, sub: string, color: string, a: number, sub2?: string) {
     ctx.save();
     ctx.globalAlpha = Math.max(0, Math.min(1, a));
     const y = H * 0.3;
@@ -1703,6 +1768,11 @@ export class Hud {
     ctx.fillStyle = '#e8e8de';
     ctx.font = '500 14px "Barlow Condensed", sans-serif';
     ctx.fillText(sub, W / 2, y + 20);
+    if (sub2) {
+      ctx.fillStyle = '#b9d4f0';
+      ctx.font = '600 13px "Barlow Condensed", sans-serif';
+      ctx.fillText(sub2, W / 2, y + 44);
+    }
     ctx.restore();
   }
 

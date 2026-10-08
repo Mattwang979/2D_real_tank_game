@@ -77,19 +77,25 @@ export function visibilityPolygon(map: GameMap, o: V2, coneAng: number, half: nu
   return pts;
 }
 
-/** Can `v` see `t` right now? */
-export function canSee(map: GameMap, v: Tank, t: Tank, now: number): boolean {
+/** Tanks lit up at night (under a flare, or burning) are seen from this far, in any direction. */
+export const LIT_RANGE = 300;
+
+/**
+ * Can `v` see `t` right now? Range, cone and foliage depend on the weather (`v.env`); a tank that
+ * just fired gives itself away with the muzzle flash, and a `lit` one (night) stands out in the dark.
+ */
+export function canSee(map: GameMap, v: Tank, t: Tank, now: number, lit = false): boolean {
   const vc = v.visionCone();
   const tp = v.turretPos();
   const dx = t.pos.x - tp.x;
   const dy = t.pos.y - tp.y;
   const d = Math.hypot(dx, dy);
-  const revealed = t.revealedUntil > now;
-  if (d > (revealed ? 320 : vc.range)) return false;
+  const revealed = t.revealedUntil > now || lit;
+  if (d > (lit ? Math.max(LIT_RANGE, v.env.reveal) : revealed ? v.env.reveal : vc.range)) return false;
   const bearing = Math.atan2(dy, dx);
   const inCone = Math.abs(angDiff(v.gunWorldAng, bearing)) <= vc.half;
   if (!revealed && !inCone && d > vc.near) return false;
-  if (!revealed && d > 55 && inFoliage(map, t.pos)) return false;
+  if (!revealed && d > v.env.foliage && inFoliage(map, t.pos)) return false;
   if (!losBlocked(map, tp, t.pos)) return true;
   // try front & rear corners so partly exposed tanks are seen
   const f = { x: Math.cos(t.ang) * t.bp.L * 0.45, y: Math.sin(t.ang) * t.bp.L * 0.45 };

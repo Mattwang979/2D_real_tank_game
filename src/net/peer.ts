@@ -7,7 +7,7 @@ import type { DataConnection, Peer } from 'peerjs';
 export type { DataConnection, Peer };
 
 export const ROOM_PREFIX = 'penetration-v1-';
-export const PROTOCOL = 1;
+export const PROTOCOL = 2;
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 export function makeCode(n = 5): string {

@@ -5,6 +5,7 @@ import { rand } from '../core/rng';
 import type { CrewRole, VehicleSpec } from '../data/vehicles';
 import { getBlueprint, type Blueprint, type ModuleDef, type ModuleKind } from './blueprint';
 import type { ModState } from '../render/tankRender';
+import { type WeatherDef, WEATHERS } from './weather';
 
 export interface ModuleRT {
   def: ModuleDef;
@@ -47,6 +48,11 @@ export class Tank {
   repairCd = 0;
   smokeCharges = 2;
   smokeCd = 0;
+  /** illumination flares (night battles) */
+  flareCharges = 0;
+  flareCd = 0;
+  /** battle weather: sets how far the crew can see */
+  env: WeatherDef = WEATHERS.clear;
   /** crew-carrier cooldown */
   crewCd = 0;
   /** ground speed factor (earthworks are slow going) */
@@ -92,6 +98,8 @@ export class Tank {
   spottedUntil = 0; // spotted by enemy team until (time)
   revealedUntil = 0; // forced reveal (fired gun)
   lastSeenPos: V2 | null = null;
+  /** battle time when the enemy last saw this tank */
+  lastSeenAt = -99;
 
   trackAcc = 0;
   hitFlash = 0;
@@ -177,7 +185,7 @@ export class Tank {
   }
   visionCone(): { range: number; half: number; near: number } {
     const cmd = this.hasRole('C') || !this.spec.crew.includes('C');
-    return { range: cmd ? 230 : 165, half: 26 * DEG, near: 42 };
+    return { range: (cmd ? 230 : 165) * this.env.range, half: 26 * DEG, near: this.env.near };
   }
   maxSpeed(): number {
     return (this.spec.speed / 3.6) * SPEED_SCALE;
@@ -265,6 +273,7 @@ export class Tank {
     if (this.boostCd > 0) this.boostCd -= dt;
     if (this.repairCd > 0) this.repairCd -= dt;
     if (this.smokeCd > 0) this.smokeCd -= dt;
+    if (this.flareCd > 0) this.flareCd -= dt;
     if (this.crewCd > 0) this.crewCd -= dt;
 
     this.updateCrew(dt);
@@ -310,6 +319,9 @@ export class Tank {
   }
   canSmoke(): boolean {
     return this.alive && this.smokeCharges > 0 && this.smokeCd <= 0;
+  }
+  canFlare(): boolean {
+    return this.alive && this.flareCharges > 0 && this.flareCd <= 0;
   }
 
   private updateRepair(dt: number) {

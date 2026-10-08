@@ -365,6 +365,60 @@ button {
   color: var(--dim);
   text-transform: uppercase;
 }
+.label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.wx-chip {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #1f2321;
+  border: 1px solid #2f3431;
+  color: var(--text);
+  white-space: nowrap;
+}
+.wx-chip.ro {
+  border-color: transparent;
+  background: transparent;
+  color: var(--dim);
+}
+.wx-pick {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 6px;
+  margin-top: 8px;
+}
+.wx-pick button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #1f2321;
+  border: 1px solid #2f3431;
+  text-align: left;
+}
+.wx-pick button b {
+  font-size: 15px;
+}
+.wx-pick button i {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--dim);
+  line-height: 1.25;
+}
+.wx-pick button.on {
+  border-color: var(--orange);
+  background: #2c2415;
+}
+.wx-pick button.on b {
+  color: var(--orange);
+}
 
 .viewmodes {
   position: absolute;
@@ -687,6 +741,12 @@ input[type='text'] {
   font-size: 34px;
   font-weight: 700;
   letter-spacing: 0.12em;
+}
+#loading .mapweather {
+  font-size: 15px;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+  margin-top: -4px;
 }
 #loading .bar {
   width: 220px;

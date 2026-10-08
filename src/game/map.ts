@@ -977,6 +977,21 @@ export function collideStatic(m: GameMap, poly: V2[], center: V2, radius: number
   if (y1 > m.size) out.push({ nx: 0, ny: -1, depth: y1 - m.size });
 }
 
+/** Is the point on a road (firm going in the rain)? City streets count everywhere. */
+export function onRoad(m: GameMap, p: V2): boolean {
+  if (m.theme === 'city') return true;
+  for (const r of m.roads) {
+    const hw = r.w / 2 + 0.5;
+    for (let i = 0; i + 1 < r.pts.length; i++) {
+      const a = r.pts[i];
+      const b = r.pts[i + 1];
+      if (p.x < Math.min(a.x, b.x) - hw || p.x > Math.max(a.x, b.x) + hw || p.y < Math.min(a.y, b.y) - hw || p.y > Math.max(a.y, b.y) + hw) continue;
+      if (pointSegDist(p, a, b) < hw) return true;
+    }
+  }
+  return false;
+}
+
 /** Is a point under tree canopy (concealment)? */
 export function inFoliage(m: GameMap, p: V2): boolean {
   const near = m.grid.query(p.x - 6, p.y - 6, p.x + 6, p.y + 6);

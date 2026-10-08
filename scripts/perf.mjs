@@ -1,12 +1,12 @@
 import { chromium } from '/opt/npm-tools/node_modules/playwright/index.mjs';
-const [map = 'city', q = 'high'] = process.argv.slice(2);
+const [map = 'city', q = 'high', weather = 'clear'] = process.argv.slice(2);
 const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' });
 const ctx = await browser.newContext({ viewport: { width: 844, height: 390 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true });
 const page = await ctx.newPage();
 page.on('pageerror', (e) => console.log('[pageerror]', e.message));
 await page.goto('http://localhost:5173/');
 await page.waitForTimeout(600);
-await page.evaluate(([m, q]) => { const s = window.__pen.save(); s.settings.map = m; s.settings.quality = q; }, [map, q]);
+await page.evaluate(([m, q, w]) => { const s = window.__pen.save(); s.settings.map = m; s.settings.quality = q; s.settings.weather = w; }, [map, q, weather]);
 await page.evaluate(() => window.__pen.startBattle());
 await page.waitForTimeout(1500);
 const r = await page.evaluate(async () => {

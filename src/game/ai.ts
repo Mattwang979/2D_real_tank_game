@@ -7,6 +7,7 @@ import { bermCover, losBlocked } from './map';
 import type { Battle } from './battle';
 import type { Carrier } from './carrier';
 import type { Tank } from './tank';
+import { FLARE, flareLight } from './weather';
 
 type Role = 'capper' | 'support' | 'flank';
 
@@ -32,6 +33,8 @@ export class AIController {
   fireAfter = 0;
   private repairAt = -1;
   private smokeHandledHit = -1;
+  /** next time to think about firing a flare (night) */
+  private flareAt = 0;
   /** optional detour waypoint taken before heading to the goal (flanking routes) */
   via: V2 | null = null;
   private usedVia = false;
@@ -227,6 +230,8 @@ export class AIController {
     if (t.crewCd <= 0 && t.needsCrewBadly() && !b.carrierFor(t) && rand.chance(dt * 0.6)) {
       if (!this.target || dist(t.pos, this.target.pos) > 140) b.useCrew(t);
     }
+    // night: light up the ground ahead, or toward an unseen shooter
+    if (t.flareCharges > 0 && now >= this.flareAt) this.considerFlare(now);
     // smoke when badly hurt
     const wall = performance.now() / 1000;
     if (t.canSmoke() && wall - t.lastHitTime < 0.6 && this.smokeHandledHit !== t.lastHitTime) {
@@ -374,6 +379,43 @@ export class AIController {
         this.reverseSteer = rand.chance(0.5) ? 1 : -1;
       }
     } else this.stuck = Math.max(0, this.stuck - dt);
+  }
+
+  /** Fire an illumination flare when the dark hides the enemy: toward whoever just hit us unseen,
+   * the last place an enemy was seen nearby, or the capture point while closing in on it. */
+  private considerFlare(now: number) {
+    const b = this.b;
+    const t = this.tank;
+    this.flareAt = now + rand.range(1.5, 3);
+    // one flare at a time per team is plenty
+    if (!t.canFlare() || b.flares.some((f) => f.team === t.team && f.t < 9)) return;
+    let aim: V2 | null = null;
+    const sh = t.lastHitBy;
+    if (sh && sh.alive && sh.team !== t.team && performance.now() / 1000 - t.lastHitTime < 4 && !b.isSpotted(t.team, sh)) {
+      // only a rough idea of where the shot came from
+      aim = { x: sh.pos.x + rand.range(-18, 18), y: sh.pos.y + rand.range(-18, 18) };
+    } else if (!this.target) {
+      let bd = 150;
+      for (const e of b.tanks) {
+        if (!e.alive || e.team === t.team || !e.lastSeenPos || now - e.lastSeenAt > 25) continue;
+        const d = dist(t.pos, e.lastSeenPos);
+        if (d > 45 && d < bd) {
+          bd = d;
+          aim = e.lastSeenPos;
+        }
+      }
+      if (!aim) {
+        const cap = b.map.capture;
+        const d = dist(t.pos, cap);
+        if (d > 55 && d < 150 && rand.chance(0.3)) aim = { x: cap.x, y: cap.y };
+      }
+    }
+    if (!aim) return;
+    const at = aim;
+    // a friendly flare already lights it up
+    if (b.flares.some((f) => f.team === t.team && f.t < FLARE.FLIGHT + FLARE.BURN - 4 && dist(f.t < FLARE.FLIGHT ? { x: f.x1, y: f.y1 } : flareLight(f), at) < FLARE.RADIUS * 0.8)) return;
+    const tp = t.turretPos();
+    if (b.useFlare(t, Math.atan2(at.y - tp.y, at.x - tp.x) + rand.range(-0.1, 0.1))) this.flareAt = now + rand.range(25, 45);
   }
 
   /** Where to drop artillery: on a slow or bunched-up spotted enemy, well clear of our own tanks. */

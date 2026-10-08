@@ -355,6 +355,43 @@ export class Effects {
     ctx.globalAlpha = 1;
   }
 
+  /** Night: redraw what glows (flames, flashes, sparks, muzzle blasts) on top of the darkness. */
+  drawEmissive(ctx: Ctx, x0: number, y0: number, x1: number, y1: number) {
+    ctx.globalCompositeOperation = 'lighter';
+    for (const p of this.parts) {
+      const r = p.size;
+      if (p.x + r < x0 || p.x - r > x1 || p.y + r < y0 || p.y - r > y1) continue;
+      const t = p.life / p.max;
+      switch (p.kind) {
+        case 'fire': {
+          ctx.globalAlpha = Math.min(1, t * 1.5) * 0.6;
+          const rc = r * 0.75;
+          ctx.drawImage(this.tex.fire, p.x - rc, p.y - rc, rc * 2, rc * 2);
+          break;
+        }
+        case 'flash':
+          ctx.globalAlpha = t * 0.7;
+          ctx.drawImage(this.tex.flash, p.x - r, p.y - r, r * 2, r * 2);
+          break;
+        case 'spark':
+          ctx.globalAlpha = Math.min(1, t * 2);
+          ctx.strokeStyle = '#ffd27a';
+          ctx.lineWidth = p.size * 1.4;
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y);
+          ctx.lineTo(p.x - p.vx * 0.03, p.y - p.vy * 0.03);
+          ctx.stroke();
+          break;
+        case 'muzzle':
+          this.drawMuzzle(ctx, p, t);
+          ctx.globalCompositeOperation = 'lighter';
+          break;
+      }
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+  }
+
   private drawMuzzle(ctx: Ctx, p: Particle, t: number) {
     const s = p.size;
     ctx.save();

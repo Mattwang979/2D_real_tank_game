@@ -235,6 +235,22 @@ const ZH: Record<string, string> = {
   'Crew carrier': '運兵車',
   'Carrier already on the way': '運兵車已在路上',
   'HOST NOT RESPONDING': '房主沒有回應',
+  'HULL-DOWN': '車體隱蔽',
+  'HULL-DOWN — only the turret can be hit': '車體隱蔽——只能打到砲塔',
+  // weather
+  Weather: '天候',
+  'Random weather': '隨機天候',
+  'Clear, rain, fog or night': '晴天、雨天、濃霧或夜戰',
+  Clear: '晴天',
+  Rain: '雨天',
+  Fog: '濃霧',
+  Night: '夜戰',
+  'Full visibility': '視野正常',
+  'Shorter sight · muddy off-road': '視野縮短 · 越野路面泥濘',
+  'Very short sight · close-range fights': '視野極短 · 近距離交戰',
+  'Darkness · gun flashes give you away · flares': '一片漆黑 · 開砲火光會暴露位置 · 可用照明彈',
+  FLARE: '照明彈',
+  'No flares left': '照明彈用完了',
 };
 
 export function t(s: string): string {

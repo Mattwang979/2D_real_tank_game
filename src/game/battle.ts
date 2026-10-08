@@ -11,12 +11,13 @@ import { VEHICLES, getVehicle, type ShellSpec, type VehicleSpec } from '../data/
 import { AIController } from './ai';
 import { type ImpactResult, fireTick, intersectTank, resolveImpact, topHit } from './armor';
 import { Effects } from './effects';
-import { type Building, type GameMap, type Tree, bermCrossing, buildMap, collideStatic, damageBuilding, losBlocked, MAPS, onBerm, setBuildingState, shellObstacleHit, structDamage, type Contact } from './map';
+import { type Building, type GameMap, type Tree, bermCrossing, buildMap, collideStatic, damageBuilding, losBlocked, MAPS, onBerm, onRoad, setBuildingState, shellObstacleHit, structDamage, type Contact } from './map';
 import { CARRIER, type Carrier, carrierHit, driveCarrier } from './carrier';
 import { NavGrid } from './nav';
 import { ARTY, ARTY_EVERY, ARTY_SHELL, type ArtyStrike, RECON_EVERY, RECON_TIME, type ReconFlight, type SupportStock } from './support';
 import { Tank } from './tank';
 import { canSee, visibilityPolygon } from './vision';
+import { FLARE, type Flare, flareDone, inFlareLight, isWeatherId, type WeatherDef, type WeatherId, WEATHERS } from './weather';
 
 export interface Projectile {
   id: number;
@@ -57,6 +58,7 @@ export type NetFx =
   | { k: 'gren'; team: 0 | 1; g: number[][] }
   | { k: 'cloud'; id: number; x: number; y: number; rm: number; life: number; team: 0 | 1 }
   | { k: 'cdie'; id: number; x: number; y: number }
+  | { k: 'flr'; id: number; tm: 0 | 1; x0: number; y0: number; x1: number; y1: number }
   | { k: 'bld'; id: number; st: number }
   | { k: 'aimp'; x: number; y: number }
   | { k: 'whis'; x: number; y: number }
@@ -110,6 +112,8 @@ export interface BattleConfig {
   slots?: Array<{ key: string; name: string; lineup: string[]; team: 0 | 1 }>;
   localKey?: string;
   mode?: 'local' | 'host' | 'replica';
+  /** weather / time of day (default clear) */
+  weather?: WeatherId;
 }
 
 export interface BattleHooks {
@@ -180,6 +184,13 @@ export class Battle {
   private supportKill = false;
   private smokeId = 1;
   private projId = 1;
+  /** weather / time of day */
+  weather: WeatherDef;
+  /** illumination flares in the air (night) */
+  flares: Flare[] = [];
+  private flareId = 1;
+  /** tanks standing out in the dark (under a flare or on fire), refreshed with spotting */
+  lit = new Set<number>();
   battleBR: number;
   enemyPool: VehicleSpec[];
 
@@ -189,6 +200,7 @@ export class Battle {
     this.mode = cfg.mode ?? 'local';
     const def = MAPS.find((m) => m.id === cfg.mapId) ?? MAPS[0];
     this.map = buildMap(def, cfg.seed ?? 1234);
+    this.weather = WEATHERS[isWeatherId(cfg.weather) ? cfg.weather : 'clear'];
     this.nav = this.mode === 'replica' ? null : new NavGrid(this.map);
     this.fx = new Effects(this.map.theme);
     this.localKey = cfg.localKey ?? 'local';
@@ -257,6 +269,7 @@ export class Battle {
   private spawnHuman(slot: PlayerSlot, vehicleId: string, pos: V2, ang: number) {
     const spec = getVehicle(vehicleId);
     const t = new Tank(spec, slot.team, pos, ang, slot.name);
+    this.equip(t);
     t.slot = slot.key;
     t.isPlayer = slot.key === this.localKey;
     slot.tank = t;
@@ -271,10 +284,17 @@ export class Battle {
   private spawnAI(team: 0 | 1, s: { x: number; y: number; ang: number }, name: string, i: number) {
     const spec = this.enemyPool[Math.floor(rand.next() * this.enemyPool.length)];
     const t = new Tank(spec, team, { x: s.x + rand.range(-2, 2), y: s.y + rand.range(-2, 2) }, s.ang, name);
+    this.equip(t);
     const roles = ['capper', 'support', 'capper', 'flank', 'support'] as const;
     this.ais.set(t.id, new AIController(t, this, roles[i % roles.length]));
     this.tanks.push(t);
     return t;
+  }
+
+  /** Battle-specific kit for a new tank: weather-dependent sight and flares. */
+  equip(t: Tank) {
+    t.env = this.weather;
+    t.flareCharges = this.weather.flares;
   }
 
   /** A remote player left: their current tank continues as AI. */
@@ -416,6 +436,38 @@ export class Battle {
     this.emit({ type: 'notice', text: 'Artillery on the way', color: '#ffd27a', team: t.team });
     this.emit({ type: 'notice', text: 'Enemy artillery incoming!', color: '#ff6b5a', team: t.team === 0 ? 1 : 0 });
     return true;
+  }
+
+  /** Night: fire an illumination flare toward `ang`; it bursts ~85 m out and lights the area for everyone. */
+  useFlare(t: Tank, ang: number): boolean {
+    if (this.mode === 'replica' || !t.canFlare() || !Number.isFinite(ang)) return false;
+    t.flareCharges--;
+    t.flareCd = FLARE.CD;
+    const tp = t.turretPos();
+    const S = this.map.size;
+    const f: Flare = { id: this.flareId++, team: t.team, x0: tp.x, y0: tp.y, x1: clamp(tp.x + Math.cos(ang) * FLARE.RANGE, 4, S - 4), y1: clamp(tp.y + Math.sin(ang) * FLARE.RANGE, 4, S - 4), t: 0 };
+    this.flares.push(f);
+    this.fxFlare(f);
+    return true;
+  }
+
+  fxFlare(f: Flare) {
+    audio.flare(this.listenerDist({ x: f.x0, y: f.y0 }));
+    this.netOut?.push({ k: 'flr', id: f.id, tm: f.team, x0: r2(f.x0), y0: r2(f.y0), x1: r2(f.x1), y1: r2(f.y1) });
+  }
+
+  private updateFlares(dt: number) {
+    if (!this.flares.length) return;
+    for (const f of this.flares) {
+      const before = f.t;
+      f.t += dt;
+      // the burst: a pop and a puff of smoke
+      if (before < FLARE.FLIGHT && f.t >= FLARE.FLIGHT) {
+        this.fx.smoke(f.x1, f.y1, false, 2.2);
+        audio.thud(this.listenerDist({ x: f.x1, y: f.y1 }) + 40);
+      }
+    }
+    this.flares = this.flares.filter((f) => !flareDone(f));
   }
 
   private updateSupport(dt: number) {
@@ -652,7 +704,7 @@ export class Battle {
 
     for (const t of this.tanks) {
       const prevReloaded = t.isReloaded();
-      t.terrainMul = t.alive && onBerm(this.map, t.pos) ? 0.5 : 1;
+      t.terrainMul = t.alive ? this.groundFactor(t) : 1;
       t.update(dt, now);
       if (t.isPlayer && !prevReloaded && t.isReloaded() && t.alive) audio.reloadDone();
     }
@@ -669,6 +721,7 @@ export class Battle {
     this.updateSmoke(dt);
     this.updateCarriers(dt);
     this.updateSupport(dt);
+    this.updateFlares(dt);
 
     // queued shots (fire button released while reloading / turret still traversing)
     for (const t of this.tanks) {
@@ -708,6 +761,13 @@ export class Battle {
     this.updateCapture(dt);
     this.updateRespawns(now);
     this.checkEnd();
+  }
+
+  /** Speed factor of the ground under a tank: earthworks are slow going, so is mud in the rain. */
+  private groundFactor(t: Tank): number {
+    let k = onBerm(this.map, t.pos) ? 0.5 : 1;
+    if (this.weather.mud < 1 && !onRoad(this.map, t.pos)) k *= this.weather.mud;
+    return k;
   }
 
   updateVision(dt: number) {
@@ -843,6 +903,13 @@ export class Battle {
         break;
       case 'aimp':
         this.fxArty(e.x, e.y);
+        break;
+      case 'flr':
+        if (!this.flares.some((f) => f.id === e.id)) {
+          const f: Flare = { id: e.id, team: e.tm, x0: e.x0, y0: e.y0, x1: e.x1, y1: e.y1, t: 0 };
+          this.flares.push(f);
+          this.fxFlare(f);
+        }
         break;
       case 'whis':
         audio.whistle(this.listenerDist({ x: e.x, y: e.y }));
@@ -1344,6 +1411,11 @@ export class Battle {
   }
 
   private updateSpotting(now: number) {
+    // night: tanks under a flare or on fire stand out in the dark
+    this.lit.clear();
+    if (this.weather.id === 'night') {
+      for (const t of this.tanks) if (t.alive && (t.burning > 0 || inFlareLight(this.flares, t.pos))) this.lit.add(t.id);
+    }
     for (const team of [0, 1] as const) {
       const recon = this.recons.some((r) => r.team === team);
       const sc = this.spottedCarriers[team];
@@ -1359,13 +1431,15 @@ export class Battle {
         if (recon) {
           set.add(e.id);
           e.lastSeenPos = { ...e.pos };
+          e.lastSeenAt = now;
           continue;
         }
         for (const v of this.tanks) {
           if (!v.alive || v.team !== team) continue;
-          if (canSee(this.map, v, e, now)) {
+          if (canSee(this.map, v, e, now, this.lit.has(e.id))) {
             set.add(e.id);
             e.lastSeenPos = { ...e.pos };
+            e.lastSeenAt = now;
             break;
           }
         }
@@ -1488,7 +1562,7 @@ export class Battle {
       if (t === me && t.alive) {
         // client-side prediction for our own tank, gently corrected toward the host
         const prevReloaded = t.isReloaded();
-        t.terrainMul = onBerm(this.map, t.pos) ? 0.5 : 1;
+        t.terrainMul = this.groundFactor(t);
         t.update(dt, this.time);
         if (!prevReloaded && t.isReloaded()) audio.reloadDone();
         this.collideTank(t, contacts);
@@ -1578,6 +1652,7 @@ export class Battle {
     }
     for (const r of this.recons) r.t += dt;
     for (const a of this.artys) a.t += dt;
+    this.updateFlares(dt);
     this.trackMarks(dt);
     this.updateSmoke(dt);
     this.updateFires(dt);

@@ -8,6 +8,7 @@ import type { Tank } from '../game/tank';
 import { ARTY, reconPos } from '../game/support';
 import { drawCarrier, drawCrewWalk } from './carrierRender';
 import { MapRenderer } from './mapRender';
+import { WeatherFx } from './weatherRender';
 import { blitPart, getBurnt, getTankSprites, makeCanvas } from './tankRender';
 
 type Ctx = CanvasRenderingContext2D;
@@ -48,6 +49,7 @@ export class BattleRenderer {
   /** while set the camera holds still (precision aiming by touching the battlefield) */
   camLock: V2 | null = null;
   shake = 0;
+  weather: WeatherFx;
   private chunkBudget = { n: 2 };
 
   constructor(canvas: HTMLCanvasElement, b: Battle, quality: 'high' | 'low') {
@@ -57,6 +59,7 @@ export class BattleRenderer {
     this.quality = quality;
     this.fog = makeCanvas(16, 16);
     this.fogCtx = this.fog.getContext('2d')!;
+    this.weather = new WeatherFx(b, quality === 'low');
     this.resize();
     const p = b.player!;
     this.cam = { x: p.pos.x, y: p.pos.y };
@@ -80,6 +83,8 @@ export class BattleRenderer {
     this.spriteScale = clamp(Math.ceil(this.baseZoom * this.dpr * 1.3), 6, 22);
     this.fog.width = Math.ceil(this.W / 2);
     this.fog.height = Math.ceil(this.H / 2);
+    this.weather.low = this.quality === 'low';
+    this.weather.resize(this.W, this.H);
   }
 
   get zoomMul(): number {
@@ -216,10 +221,19 @@ export class BattleRenderer {
     b.fx.draw(ctx, true, x0, y0, x1, y1);
     this.drawGrenades(ctx);
     b.fx.drawSmokeClouds(ctx, b.map.smokes, x0, y0, x1, y1);
-    for (const rc of b.recons) this.drawPlane(ctx, rc.team, reconPos(rc));
-
-    // fog of war outside the player's vision polygon
-    if (b.player && b.player.alive && b.visionPoly.length > 2) this.drawFog(ctx);
+    const wx = this.weather;
+    wx.update(dt, this);
+    wx.drawWorld(ctx, x0, y0, x1, y1);
+    if (b.weather.id === 'night') {
+      // darkness, lit by flares, fires and gun flashes
+      wx.drawNight(ctx, this, x0, y0, x1, y1);
+      for (const rc of b.recons) this.drawPlane(ctx, rc.team, reconPos(rc));
+    } else {
+      for (const rc of b.recons) this.drawPlane(ctx, rc.team, reconPos(rc));
+      // fog of war outside the player's vision polygon
+      if (b.player && b.player.alive && b.visionPoly.length > 2) this.drawFog(ctx, wx.fogColor());
+    }
+    wx.drawScreen(ctx, this);
 
     this.drawOverlays(ctx, dt);
   }
@@ -231,7 +245,7 @@ export class BattleRenderer {
     return b.isSpotted(b.playerTeam, t);
   }
 
-  private drawCapture(ctx: Ctx) {
+  drawCapture(ctx: Ctx) {
     const b = this.b;
     const c = b.map.capture;
     const cap = b.capture;
@@ -360,7 +374,7 @@ export class BattleRenderer {
     ctx.restore();
   }
 
-  private drawProjectiles(ctx: Ctx) {
+  drawProjectiles(ctx: Ctx) {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     ctx.lineCap = 'round';
@@ -469,7 +483,7 @@ export class BattleRenderer {
     ctx.restore();
   }
 
-  private drawFog(ctx: Ctx) {
+  private drawFog(ctx: Ctx, color: string) {
     const fc = this.fogCtx;
     const fw = this.fog.width;
     const fh = this.fog.height;
@@ -477,7 +491,7 @@ export class BattleRenderer {
     fc.setTransform(1, 0, 0, 1, 0, 0);
     fc.globalCompositeOperation = 'source-over';
     fc.clearRect(0, 0, fw, fh);
-    fc.fillStyle = 'rgba(6,8,6,0.5)';
+    fc.fillStyle = color;
     fc.fillRect(0, 0, fw, fh);
     fc.globalCompositeOperation = 'destination-out';
     fc.setTransform(this.zoom * k, 0, 0, this.zoom * k, (this.W / 2 - this.cam.x * this.zoom) * k, (this.H / 2 - this.cam.y * this.zoom) * k);

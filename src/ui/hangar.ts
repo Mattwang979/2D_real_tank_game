@@ -5,7 +5,7 @@ import { get, save, toggleLineup } from '../core/save';
 import { CLASS_NAMES, getVehicle, type VehicleSpec } from '../data/vehicles';
 import { MAPS } from '../game/map';
 import { drawArmorView, drawTankShadowVector, drawTankVector, drawXray, drawTankSprite } from '../render/tankRender';
-import { NATION_FLAG, h, modal, toast, vehicleStats } from './common';
+import { NATION_FLAG, h, modal, toast, vehicleStats, weatherChip } from './common';
 import { t } from './i18n';
 
 type Mode = 'ext' | 'armor' | 'xray';
@@ -70,7 +70,16 @@ export class Hangar {
       { class: 'actions' },
       h('button', { class: 'btn primary', onclick: () => this.onBattle() }, t('BATTLE')),
       h('button', { class: 'btn mp-btn', onclick: () => this.onMultiplayer() }, `👥 ${t('MULTIPLAYER')}`),
-      h('div', { class: 'label' }, t('Map')),
+      h(
+        'div',
+        { class: 'label-row' },
+        h('div', { class: 'label' }, t('Map')),
+        weatherChip(get().settings.weather, (id) => {
+          get().settings.weather = id;
+          save();
+          this.refresh();
+        }),
+      ),
       this.mapsEl,
       h('div', { style: 'flex:1' }),
       h('button', { class: 'btn', onclick: () => this.onTree() }, t('TECH TREE')),

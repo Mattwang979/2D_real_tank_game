@@ -4,6 +4,7 @@ import { audio } from '../core/audio';
 import { get, reset, save } from '../core/save';
 import { VEHICLES, type VehicleSpec, penAt } from '../data/vehicles';
 import { getLang, setLang, t } from './i18n';
+import { isWeatherId, WEATHER_IDS, WEATHERS } from '../game/weather';
 
 type Attrs = Record<string, string | number | boolean | ((e: Event) => void) | undefined>;
 
@@ -46,6 +47,33 @@ export function modal(content: HTMLElement, onClose?: () => void): () => void {
   });
   document.body.append(bg);
   return close;
+}
+
+/** Icon + name of a weather choice ('random' or a weather id). */
+export function weatherLabel(id: string): string {
+  if (!isWeatherId(id)) return `🎲 ${t('Random weather')}`;
+  const w = WEATHERS[id];
+  return `${w.icon} ${t(w.name)}`;
+}
+
+/** Weather choice chip; tapping it opens the picker (read-only when `onPick` is null). */
+export function weatherChip(cur: string, onPick: ((id: string) => void) | null): HTMLElement {
+  if (!onPick) return h('span', { class: 'wx-chip ro' }, weatherLabel(cur));
+  return h('button', { class: 'wx-chip', onclick: () => weatherPicker(cur, onPick) }, `${weatherLabel(cur)} ▾`);
+}
+
+export function weatherPicker(cur: string, onPick: (id: string) => void) {
+  let close = () => {};
+  const opt = (id: string, title: string, info: string) =>
+    h('button', { class: id === cur ? 'on' : '', onclick: () => (close(), onPick(id)) }, h('b', {}, title), h('i', {}, info));
+  const c = h(
+    'div',
+    {},
+    h('h2', {}, t('Weather')),
+    h('div', { class: 'wx-pick' }, opt('random', weatherLabel('random'), t('Clear, rain, fog or night')), ...WEATHER_IDS.map((id) => opt(id, weatherLabel(id), t(WEATHERS[id].info)))),
+    h('div', { class: 'row' }, h('button', { class: 'btn', onclick: () => close() }, t('Close'))),
+  );
+  close = modal(c);
 }
 
 export function confirmBox(text: string, yes: () => void) {

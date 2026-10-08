@@ -57,9 +57,10 @@ await client.screenshot({ path: `${out}/mp_client_lobby.png` });
 await client.getByText('Switch team', { exact: true }).click();
 await waitFor(host, () => window.__pen.lobby.host.players[1].team === 0);
 await host.evaluate(() => window.__pen.lobby.host.setMap('valley'));
+await host.evaluate(() => window.__pen.lobby.host.setWeather('night'));
 await host.waitForTimeout(300);
-const lob = await client.evaluate(() => ({ map: window.__pen.lobby.client.mapId, players: window.__pen.lobby.client.players.map((p) => [p.name, p.team]) }));
-check('lobby sync (team switch + map)', lob.map === 'valley' && lob.players[1][1] === 0, JSON.stringify(lob));
+const lob = await client.evaluate(() => ({ map: window.__pen.lobby.client.mapId, weather: window.__pen.lobby.client.weather, players: window.__pen.lobby.client.players.map((p) => [p.name, p.team]) }));
+check('lobby sync (team switch + map + weather)', lob.map === 'valley' && lob.weather === 'night' && lob.players[1][1] === 0, JSON.stringify(lob));
 await host.screenshot({ path: `${out}/mp_host_lobby2.png` });
 
 // start
@@ -80,6 +81,8 @@ log('client view', JSON.stringify(sync), 'host view', JSON.stringify(hostView));
 check('client replica has all tanks', sync.tanks === hostView.tanks && sync.tanks >= 10, `${sync.tanks} vs ${hostView.tanks}`);
 // both humans on team 0
 check('client on the same team as host', sync.team === 0);
+const wx = await client.evaluate(() => ({ w: window.__pen.battle.weather.id, range: window.__pen.battle.player.visionCone().range, fl: window.__pen.battle.player.flareCharges }));
+check('night battle on the client', wx.w === 'night' && wx.range < 110 && wx.fl === 2, JSON.stringify(wx));
 
 // client drives forward: host should see the remote tank move
 await client.evaluate(() => {
@@ -154,6 +157,11 @@ check('carrier position in sync', cpos[0] && cpos[1] && Math.hypot(cpos[0].x - c
 // smoke from the client
 await client.evaluate(() => window.__pen.hud.controls.smoke(0));
 check('client smoke creates clouds on both', (await waitFor(host, () => window.__pen.battle.map.smokes.length >= 3, null, 4000)) && (await waitFor(client, () => window.__pen.battle.map.smokes.length >= 3, null, 4000)));
+// flare from the client: the host launches it, both see it, the client's charge count drops
+const hf0 = await host.evaluate(() => window.__pen.battle.flares.length);
+await client.evaluate(() => window.__pen.hud.controls.flare(0.5));
+check('client flare on both', (await waitFor(host, (n) => window.__pen.battle.flares.length > n, hf0, 4000)) && (await waitFor(client, () => window.__pen.battle.flares.some((f) => f.team === window.__pen.battle.playerTeam), null, 4000)));
+check('client flare charges synced', await waitFor(client, () => window.__pen.battle.player.flareCharges === 1, null, 3000));
 
 // kill the client's tank on the host → death screen → respawn
 await host.evaluate(() => {

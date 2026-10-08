@@ -16,6 +16,11 @@ await page.evaluate(() => {
 await page.mouse.click(400, 200);
 await page.waitForTimeout(700);
 await page.screenshot({ path: `${out}/zh2_hangar.png` });
+await page.locator('.wx-chip').click();
+await page.waitForTimeout(300);
+await page.screenshot({ path: `${out}/zh2_weather.png` });
+await page.locator('.wx-pick button').nth(4).click();
+await page.waitForTimeout(200);
 await page.evaluate(() => window.__pen.openLobby());
 await page.waitForTimeout(400);
 await page.screenshot({ path: `${out}/zh2_lobby_menu.png` });
@@ -29,7 +34,7 @@ await page.evaluate(() => {
 await page.evaluate(() => window.__pen.startBattle());
 await page.waitForTimeout(1000);
 await page.evaluate(() => {
-  window.__pen.battle.time = 6;
+  window.__pen.battle.time = 3;
 });
 await page.waitForTimeout(1200);
 await page.screenshot({ path: `${out}/zh2_battle.png` });

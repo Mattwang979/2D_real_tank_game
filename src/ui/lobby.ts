@@ -6,7 +6,7 @@ import { MAPS } from '../game/map';
 import { NetError, normCode } from '../net/peer';
 import { type ClientGame, ClientRoom, HostRoom, type RejectReason, TEAM_MAX } from '../net/session';
 import type { LobbyPlayer } from '../net/protocol';
-import { h, modal, toast } from './common';
+import { h, modal, toast, weatherChip } from './common';
 import { t } from './i18n';
 
 export class Lobby {
@@ -124,7 +124,7 @@ export class Lobby {
     });
     const s = get();
     try {
-      const room = await HostRoom.create(s.playerName, s.lineup, s.settings.map);
+      const room = await HostRoom.create(s.playerName, s.lineup, s.settings.map, s.settings.weather);
       if (token !== this.busyToken) {
         room.close();
         return;
@@ -189,6 +189,7 @@ export class Lobby {
     const myKey = this.host ? 'host' : this.client!.key;
     const me = players.find((p) => p.key === myKey);
     const mapId = this.host ? this.host.mapId : this.client!.mapId;
+    const weather = this.host ? this.host.weather : this.client!.weather;
     const code = room.code;
 
     const team = (tm: 0 | 1) => {
@@ -217,6 +218,7 @@ export class Lobby {
     const mapEl = isHost
       ? h('div', { class: 'map-pick lb-maps' }, ...maps.map(([id, name]) => h('button', { class: id === mapId ? 'on' : '', onclick: () => this.host!.setMap(id) }, name)))
       : h('div', { class: 'lb-mapname' }, `${t('Map')}: ${maps.find((m) => m[0] === mapId)?.[1] ?? '—'}`);
+    const wxEl = weatherChip(weather, isHost ? (id) => this.host?.setWeather(id) : null);
 
     const switchTeam = () => {
       if (!me) return;
@@ -242,7 +244,7 @@ export class Lobby {
         h(
           'div',
           { class: 'lb-bottom' },
-          h('div', { class: 'lb-col' }, h('div', { class: 'label' }, t('Map')), mapEl),
+          h('div', { class: 'lb-col' }, h('div', { class: 'label-row' }, h('div', { class: 'label' }, t('Map')), wxEl), mapEl),
           h('div', { class: 'lb-col lb-mine' }, h('button', { class: 'btn', onclick: () => switchTeam() }, t('Switch team')), h('button', { class: 'btn', onclick: () => this.editLineup() }, `${t('Lineup')} ✎`)),
           isHost
             ? h('button', { class: 'btn primary lb-start', onclick: () => this.host && this.onHostStart(this.host) }, t('START BATTLE'))
