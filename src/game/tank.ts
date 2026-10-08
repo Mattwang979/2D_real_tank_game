@@ -312,8 +312,11 @@ export class Tank {
     }
   }
 
+  /** Knocked out when fewer than two crew remain, or three or more are dead. */
   knockedOut(): boolean {
-    return this.crewAlive().length < 2;
+    const alive = this.crewAlive().length;
+    const dead = this.spec.crew.length - alive;
+    return alive < 2 || dead >= 3;
   }
 
   /** Random gaussian deviation for shot direction. */

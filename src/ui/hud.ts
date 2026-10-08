@@ -64,6 +64,8 @@ export class Hud {
   private minimapBg: HTMLCanvasElement | null = null;
   /** seconds left for the first-battle controls hint */
   tutorial = 0;
+  /** incoming fire direction markers */
+  private incoming: Array<{ ang: number; t: number; pen: boolean }> = [];
   private fireFlash = 0;
 
   constructor(b: Battle, r: BattleRenderer, canvas: HTMLCanvasElement) {
@@ -238,6 +240,8 @@ export class Hud {
     for (const f of this.feed) f.t += dt;
     this.feed = this.feed.filter((f) => f.t < 7);
     for (const h of this.hitcams) h.t += dt;
+    for (const i of this.incoming) i.t += dt;
+    this.incoming = this.incoming.filter((i) => i.t < 2.2);
     this.hitcams = this.hitcams.filter((h) => h.t < h.life);
     this.fireFlash = Math.max(0, this.fireFlash - dt);
     if (this.deathInfo) this.deathInfo.t += dt;
@@ -342,6 +346,11 @@ export class Hud {
           if (label) this.r.addPopup(label, ev.res.world.x, ev.res.world.y, ev.res.outcome === 'ricochet' ? '#f2c94c' : '#c8c8c0', false);
         }
         if (ev.target.isPlayer && ev.res.damage > 0) this.r.shake = Math.min(1.2, this.r.shake + 0.6);
+        if (ev.target.isPlayer && ev.shooter !== ev.target) {
+          const tp = ev.target.pos;
+          this.incoming.push({ ang: Math.atan2(ev.shooter.pos.y - tp.y, ev.shooter.pos.x - tp.x), t: 0, pen: ev.res.outcome === 'pen' });
+          if (this.incoming.length > 4) this.incoming.shift();
+        }
         void involvesPlayer;
         break;
       }
@@ -403,6 +412,7 @@ export class Hud {
     }
 
     if (p && p.alive && b.state === 'playing') {
+      this.drawIncoming(ctx, p);
       this.drawPenInfo(ctx, W, H);
       this.drawSticks(ctx);
       this.drawButtons(ctx, p);
@@ -645,6 +655,13 @@ export class Hud {
       ctx.fillText(`🔧 ${Math.ceil(rep.repair)}s`, x + w * 0.7, yy);
       yy += 13;
     }
+    const enemyTeam = p.team === 0 ? 1 : 0;
+    if (this.b.isSpotted(enemyTeam, p)) {
+      ctx.fillStyle = '#ff6b5a';
+      ctx.font = '700 10px "Barlow Condensed", sans-serif';
+      ctx.fillText(`👁 ${tr('SPOTTED')}`, x + w * 0.7, yy);
+      yy += 13;
+    }
     if (p.pendingSwapRole) {
       ctx.fillStyle = '#9fd3ff';
       ctx.font = '600 10px "Barlow Condensed", sans-serif';
@@ -686,6 +703,30 @@ export class Hud {
       ctx.fillStyle = n.color;
       ctx.fillText(n.text, W / 2, y);
       y += 18;
+    }
+    ctx.restore();
+  }
+
+  private drawIncoming(ctx: Ctx, p: Tank) {
+    if (!this.incoming.length) return;
+    const c = this.r.toScreen(p.pos);
+    const R = Math.min(this.r.W, this.r.H) * 0.2;
+    ctx.save();
+    for (const i of this.incoming) {
+      const a = 1 - i.t / 2.2;
+      ctx.strokeStyle = i.pen ? `rgba(235,60,45,${0.85 * a})` : `rgba(250,200,80,${0.75 * a})`;
+      ctx.lineWidth = 6;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, R, i.ang - 0.28, i.ang + 0.28);
+      ctx.stroke();
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.beginPath();
+      ctx.moveTo(c.x + Math.cos(i.ang) * (R + 14), c.y + Math.sin(i.ang) * (R + 14));
+      ctx.lineTo(c.x + Math.cos(i.ang - 0.1) * (R + 3), c.y + Math.sin(i.ang - 0.1) * (R + 3));
+      ctx.lineTo(c.x + Math.cos(i.ang + 0.1) * (R + 3), c.y + Math.sin(i.ang + 0.1) * (R + 3));
+      ctx.closePath();
+      ctx.fill();
     }
     ctx.restore();
   }

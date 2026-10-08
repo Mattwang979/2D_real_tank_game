@@ -27,6 +27,7 @@ const ZH: Record<string, string> = {
   CONTESTED: '爭奪中',
   FIRE: '開火',
   BURNING: '起火中',
+  SPOTTED: '被發現',
   DESTROYED: '已被擊毀',
   by: '擊毀者',
   'TAP TO DEPLOY': '點擊出擊',

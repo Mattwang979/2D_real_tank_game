@@ -104,8 +104,11 @@ export function intersectTank(t: Tank, p0: V2, p1: V2, heightRoll: number, barre
     const ta = t.turretWorldAng;
     turHit = edgeHit(t.bp.turretEdges, toLocal(p0, tp, ta), toLocal(p1, tp, ta));
   }
+  // 2.5D: every shell flies at a random height. Below the hull roof it strikes the hull,
+  // above it the shell passes over the hull and can only strike the turret / superstructure.
   let chosen: ArmorHit | null = null;
-  if (turHit && (heightRoll < 0.8 || !hullHit)) chosen = { t: turHit.t, part: 'turret', edge: turHit.edge, world: lerpP(p0, p1, turHit.t) };
+  const highShot = heightRoll < t.bp.turretShare;
+  if (turHit && (highShot || !hullHit)) chosen = { t: turHit.t, part: 'turret', edge: turHit.edge, world: lerpP(p0, p1, turHit.t) };
   else if (hullHit) chosen = { t: hullHit.t, part: 'hull', edge: hullHit.edge, world: lerpP(p0, p1, hullHit.t) };
 
   if (!ignoreBarrel && !t.turretOff) {
@@ -154,12 +157,12 @@ export interface Prediction {
   label: string;
 }
 
-/** Deterministic prediction used for the aim reticle and AI weak-spot selection. */
-export function predictShot(shooter: Tank, target: Tank, shell: ShellSpec, from: V2, dir: V2): Prediction {
-  const far = { x: from.x + dir.x * 900, y: from.y + dir.y * 900 };
-  const hit = intersectTank(target, from, far, 0, 1, true);
-  if (!hit || !hit.edge) return { outcome: 'none', eff: 0, pen: 0, label: '' };
-  const dist = hit.t * 900;
+/** Evaluate one part (hull or turret) for the predictor. */
+function predictPart(target: Tank, shell: ShellSpec, from: V2, dir: V2, part: 'hull' | 'turret'): Prediction | null {
+  const far = { x: from.x + dir.x * 2500, y: from.y + dir.y * 2500 };
+  const hit = intersectTank(target, from, far, part === 'turret' ? 0 : 0.999, 1, true);
+  if (!hit || !hit.edge || hit.part !== part) return null;
+  const dist = hit.t * 2500;
   const frameAng = hit.part === 'turret' ? target.turretWorldAng : target.ang;
   const dl = dirToLocal(dir, frameAng);
   const cosH = -(dl.x * hit.edge.n.x + dl.y * hit.edge.n.y);
@@ -168,11 +171,36 @@ export function predictShot(shooter: Tank, target: Tank, shell: ShellSpec, from:
   let pen = penAt(shell, dist);
   if (hit.part === 'hull' && hit.edge.zone === 'side') pen -= trackAbsorb(target, cosH, shell);
   const label = partLabel(target, hit.edge.key);
+  if (shell.type === 'HE') {
+    const cbrtE = Math.cbrt(Math.max(1, shell.explosive));
+    if (pen >= e.eff || target.spec.armor.openTop || plate.t < cbrtE * 1.15) return { outcome: 'pen', eff: e.eff, pen, label };
+    return { outcome: 'no', eff: e.eff, pen, label };
+  }
   if (!e.overmatch && e.angN > RIC[shell.type]) return { outcome: 'ricochet', eff: e.eff, pen, label };
   if (pen >= e.eff * 1.08) return { outcome: 'pen', eff: e.eff, pen, label };
   if (pen >= e.eff * 0.9) return { outcome: 'maybe', eff: e.eff, pen, label };
-  void shooter;
   return { outcome: 'no', eff: e.eff, pen, label };
+}
+
+const RANK: Record<Prediction['outcome'], number> = { pen: 3, maybe: 2, no: 1, ricochet: 0, none: -1 };
+
+/**
+ * Deterministic prediction used for the aim reticle and AI weak-spot selection.
+ * When the line crosses both hull and turret, the more likely hull result is reported
+ * unless the turret result is worse (so a green reticle means both will penetrate).
+ */
+export function predictShot(shooter: Tank, target: Tank, shell: ShellSpec, from: V2, dir: V2): Prediction {
+  void shooter;
+  const hull = predictPart(target, shell, from, dir, 'hull');
+  const tur = predictPart(target, shell, from, dir, 'turret');
+  if (!hull && !tur) return { outcome: 'none', eff: 0, pen: 0, label: '' };
+  if (!hull) return tur!;
+  if (!tur) return hull;
+  const hp = RANK[hull.outcome] >= 2;
+  const tp = RANK[tur.outcome] >= 2;
+  if (hp && tp) return RANK[tur.outcome] < RANK[hull.outcome] ? tur : hull;
+  if (hp !== tp) return { ...(hp ? hull : tur), outcome: 'maybe' };
+  return hull;
 }
 
 function trackAbsorb(t: Tank, cosH: number, shell: ShellSpec): number {
@@ -207,7 +235,12 @@ function rayToFrame(t: Tank, frame: 'hull' | 'turret' | 'gun', o: V2, d: V2): { 
 
 const ABSORB: Record<string, number> = { engine: 0.3, transmission: 0.35, breech: 0.3, crew: 0.5, ammo: 0.55, fuel: 0.55, track: 0.7, barrel: 1 };
 
-function castDamage(t: Tank, o: V2, d: V2, len: number, dmg: number, acc: Map<number, number>, coreHits?: Set<number>) {
+function castDamage(t: Tank, o: V2, d: V2, len: number, dmg: number, acc: Map<number, number>, coreHits?: Set<number>, core = false) {
+  // firewall between fighting compartment and engine bay stops fragments (the core punches through, weakened)
+  const bx = t.bp.bulkheadX;
+  let wall = Infinity;
+  if (Math.abs(d.x) > 1e-6 && (o.x - bx) * d.x < 0) wall = (bx - o.x) / d.x;
+  if (!core) len = Math.min(len, wall);
   const items: Array<{ t: number; i: number }> = [];
   for (let i = 0; i < t.mods.length; i++) {
     const m = t.mods[i];
@@ -223,7 +256,12 @@ function castDamage(t: Tank, o: V2, d: V2, len: number, dmg: number, acc: Map<nu
   }
   items.sort((a, b) => a.t - b.t);
   let cur = dmg;
+  let walled = false;
   for (const it of items) {
+    if (!walled && it.t > wall) {
+      cur *= 0.5;
+      walled = true;
+    }
     if (cur < 3) break;
     acc.set(it.i, (acc.get(it.i) ?? 0) + cur);
     coreHits?.add(it.i);
@@ -232,6 +270,7 @@ function castDamage(t: Tank, o: V2, d: V2, len: number, dmg: number, acc: Map<nu
 }
 
 function blastDamage(t: Tank, c: V2, r: number, dmg: number, acc: Map<number, number>) {
+  const bx = t.bp.bulkheadX;
   for (let i = 0; i < t.mods.length; i++) {
     const m = t.mods[i];
     if (m.def.kind === 'barrel' || m.def.kind === 'track') continue;
@@ -251,7 +290,9 @@ function blastDamage(t: Tank, c: V2, r: number, dmg: number, acc: Map<number, nu
     if (m.def.frame === 'turret') p = toWorld(p, { x: t.bp.turretX, y: 0 }, t.turretRel);
     const dd = Math.hypot(p.x - c.x, p.y - c.y);
     if (dd > r) continue;
-    acc.set(i, (acc.get(i) ?? 0) + dmg * (1 - (dd / r) * 0.7));
+    const across = (p.x - bx) * (c.x - bx) < 0 && m.def.frame === 'hull';
+    const f = dd / r;
+    acc.set(i, (acc.get(i) ?? 0) + dmg * (1 - f * f * 0.75) * (across ? 0.25 : 1));
   }
 }
 
@@ -413,7 +454,7 @@ export function resolveImpact(shooter: Tank | null, target: Tank, shell: ShellSp
   else if (shell.type === 'APHE') coreLen = Math.min(exitD - 0.05, rand.range(0.8, 1.5) * (R > 10 ? 1 : 0.5));
   else coreLen = Math.min(exitD, 1.5 + R / 22);
   coreLen = Math.max(0.15, coreLen);
-  castDamage(target, entryH, dH, coreLen, shell.type === 'HE' ? coreDmg * 0.4 : coreDmg, acc, coreHits);
+  castDamage(target, entryH, dH, coreLen, shell.type === 'HE' ? coreDmg * 0.4 : coreDmg, acc, coreHits, true);
   base.segs.push({ a: entryH, b: { x: entryH.x + dH.x * coreLen, y: entryH.y + dH.y * coreLen }, kind: 'core' });
 
   // spall cone
@@ -436,12 +477,12 @@ export function resolveImpact(shooter: Tank | null, target: Tank, shell: ShellSp
     base.segs.push({ a: entryH, b: { x: entryH.x + d.x * l, y: entryH.y + d.y * l }, kind: 'frag' });
   }
 
-  // explosive filler
+  // explosive filler — bigger shells throw more, heavier fragments over a larger radius
   if ((shell.type === 'APHE' || shell.type === 'HE') && shell.explosive > 0) {
     const c = { x: entryH.x + dH.x * coreLen, y: entryH.y + dH.y * coreLen };
-    const n = Math.round(clamp(14 + shell.explosive / 5, 14, 64));
-    const len0 = 0.7 + cbrtE * 0.2;
-    const fd = 26 + cbrtE * 2;
+    const n = Math.round(clamp(10 + shell.explosive / 5 + cal / 5, 14, 70));
+    const len0 = 0.6 + cbrtE * 0.18 + cal / 250;
+    const fd = 24 + cbrtE * 2 + cal * 0.08;
     for (let i = 0; i < n; i++) {
       const a = rand.range(0, Math.PI * 2);
       const d = { x: Math.cos(a) * 0.6 + dH.x * 0.4, y: Math.sin(a) * 0.6 + dH.y * 0.4 };
@@ -452,8 +493,8 @@ export function resolveImpact(shooter: Tank | null, target: Tank, shell: ShellSp
       castDamage(target, c, d, l, fd, acc);
       base.segs.push({ a: c, b: { x: c.x + d.x * l, y: c.y + d.y * l }, kind: 'blast' });
     }
-    const r = 0.45 + cbrtE * 0.17;
-    blastDamage(target, c, r, 30 + cbrtE * 9, acc);
+    const r = 0.4 + cbrtE * 0.17 + cal / 220;
+    blastDamage(target, c, r, 30 + cbrtE * 10 + cal * 0.25, acc);
     base.blast = { c, r };
   }
 
@@ -478,13 +519,13 @@ function applyDamage(shooter: Tank | null, target: Tank, acc: Map<number, number
       if (before > 0 && m.hp <= 0) ammoDestroyed++;
       else if (dmg >= 30) ammoHeavy = true;
     } else if (k === 'fuel') {
-      const pFire = m.hp <= 0 ? 0.5 : 0.22;
+      const pFire = m.hp <= 0 ? 0.32 : 0.12;
       if (rand.chance(pFire)) {
         res.fire = true;
         setFireSource(target, m.def.shape);
       }
     } else if (k === 'engine') {
-      if (rand.chance(m.hp <= 0 ? 0.22 : 0.08)) {
+      if (rand.chance(m.hp <= 0 ? 0.16 : 0.05)) {
         res.fire = true;
         setFireSource(target, m.def.shape);
       }

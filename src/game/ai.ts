@@ -213,7 +213,10 @@ export class AIController {
     }
 
     const heavy = t.spec.cls === 'heavy' || t.spec.cls === 'td';
-    const stopToShoot = engaging && (heavy || eDist < 140 || this.role === 'support' || (this.goal && dist(t.pos, this.goal) < 8));
+    const cap = b.map.capture;
+    const inCap = dist(t.pos, cap) < cap.r * 0.8;
+    const capping = this.role === 'capper' && !(b.capture.owner === t.team && !b.capture.contested);
+    const stopToShoot = engaging && (capping ? inCap || eDist < 45 : heavy || eDist < 140 || this.role === 'support' || (this.goal && dist(t.pos, this.goal) < 8));
     if (stopToShoot && e) {
       // angle the hull: heavies keep ~28° off-angle, casemates point the gun
       const bearing = Math.atan2(e.pos.y - t.pos.y, e.pos.x - t.pos.x);
@@ -228,6 +231,11 @@ export class AIController {
       return;
     }
 
+    if (capping && inCap && !engaging) {
+      t.throttle = 0;
+      t.steer = 0;
+      return;
+    }
     // follow path
     while (this.path.length && dist(t.pos, this.path[0]) < 5) this.path.shift();
     const wp = this.path[0] ?? this.goal;

@@ -52,6 +52,10 @@ export interface Blueprint {
   radius: number;
   turretFrontX: number;
   turretBackX: number;
+  /** hull-local x of the firewall between fighting compartment and engine bay */
+  bulkheadX: number;
+  /** share of the frontal silhouette height taken by the turret / superstructure */
+  turretShare: number;
 }
 
 const cache = new Map<string, Blueprint>();
@@ -481,5 +485,7 @@ function build(spec: VehicleSpec): Blueprint {
     radius,
     turretFrontX: frontX,
     turretBackX: backX,
+    bulkheadX: engX1 + 0.08,
+    turretShare: casemate ? 0.5 : spec.cls === 'ac' ? 0.45 : 0.4,
   };
 }
