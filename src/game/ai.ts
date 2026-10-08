@@ -5,6 +5,7 @@ import { rand } from '../core/rng';
 import { predictShot } from './armor';
 import { losBlocked } from './map';
 import type { Battle } from './battle';
+import type { Carrier } from './carrier';
 import type { Tank } from './tank';
 
 type Role = 'capper' | 'support' | 'flank';
@@ -187,6 +188,10 @@ export class AIController {
         this.repairAt = -1;
       }
     } else this.repairAt = -1;
+    // call a crew carrier when crew are down and the fight is not right on top of us
+    if (t.crewCd <= 0 && t.needsCrewBadly() && !b.carrierFor(t) && rand.chance(dt * 0.6)) {
+      if (!this.target || dist(t.pos, this.target.pos) > 140) b.useCrew(t);
+    }
     // smoke when badly hurt
     const wall = performance.now() / 1000;
     if (t.canSmoke() && wall - t.lastHitTime < 0.6 && this.smokeHandledHit !== t.lastHitTime) {
@@ -240,10 +245,24 @@ export class AIController {
         }
       }
     } else {
-      // look along movement direction / toward capture
-      const cap = b.map.capture;
-      const look = this.path.length ? this.path[0] : cap;
-      t.aimAngle = Math.atan2(look.y - tp.y, look.x - tp.x);
+      const cv = this.carrierTarget(tp);
+      if (cv) {
+        // no tank to fight: shoot up the enemy's crew carrier
+        const v = t.spec.gun.shells[t.shellIdx].velocity * b.shellSpeedScale;
+        const tof = dist(tp, cv.pos) / v;
+        const px = cv.pos.x + Math.cos(cv.ang) * cv.speed * tof;
+        const py = cv.pos.y + Math.sin(cv.ang) * cv.speed * tof;
+        t.aimAngle = Math.atan2(py - tp.y, px - tp.x) + this.aimErr * 0.5;
+        if (t.isReloaded() && t.canFire() && now >= this.fireAfter && t.aimError() < Math.max(0.6 * DEG, t.dispersion() * 1.4)) {
+          t.wantFire = true;
+          this.fireAfter = now + rand.range(0.3, 1.0);
+        }
+      } else {
+        // look along movement direction / toward capture
+        const cap = b.map.capture;
+        const look = this.path.length ? this.path[0] : cap;
+        t.aimAngle = Math.atan2(look.y - tp.y, look.x - tp.x);
+      }
     }
 
     // ---------------- movement
@@ -320,6 +339,22 @@ export class AIController {
         this.reverseSteer = rand.chance(0.5) ? 1 : -1;
       }
     } else this.stuck = Math.max(0, this.stuck - dt);
+  }
+
+  private carrierTarget(tp: V2): Carrier | null {
+    const b = this.b;
+    const seen = b.spottedCarriers[this.tank.team];
+    let best: Carrier | null = null;
+    let bd = 240;
+    for (const c of b.carriers) {
+      if (c.state === 'dead' || c.team === this.tank.team || !seen.has(c.id)) continue;
+      const d = dist(tp, c.pos);
+      if (d < bd && !losBlocked(b.map, tp, c.pos)) {
+        bd = d;
+        best = c;
+      }
+    }
+    return best;
   }
 
   private friendlyInLine(e: Tank): boolean {

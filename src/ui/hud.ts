@@ -10,6 +10,7 @@ import { type V2, DEG, angDiff, clamp, dist, formatNum } from '../core/math';
 import { audio } from '../core/audio';
 import type { Battle, BattleEvent } from '../game/battle';
 import { BATTLE_TIME, TICKETS } from '../game/battle';
+import { CARRIER } from '../game/carrier';
 import { Tank } from '../game/tank';
 import { TEAM_COL, predColor, type BattleRenderer } from '../render/battleRender';
 import { drawXray, drawTankSprite, makeCanvas } from '../render/tankRender';
@@ -26,6 +27,7 @@ export interface Controls {
   smoke(ang: number): void;
   boost(): void;
   repair(): void;
+  crew(): void;
   respawn(id: string): void;
 }
 
@@ -55,6 +57,10 @@ export function localControls(b: Battle): Controls {
     repair: () => {
       const p = me();
       if (p) b.useRepair(p);
+    },
+    crew: () => {
+      const p = me();
+      if (p) b.useCrew(p);
     },
     respawn: (id) => b.respawnPlayer(id),
   };
@@ -93,7 +99,7 @@ interface Notice {
   t: number;
 }
 
-const ABILITY_IDS = ['brake', 'boost', 'smoke', 'repair'] as const;
+const ABILITY_IDS = ['brake', 'boost', 'smoke', 'repair', 'crew'] as const;
 
 export class Hud {
   b: Battle;
@@ -174,9 +180,9 @@ export class Hud {
     this.arcTop = fy - fr - 10;
     if (p && p.alive && this.b.state === 'playing') {
       // ability buttons on an arc around the fire stick (left → up)
-      const br = clamp(H * 0.062, 21, 26);
-      const ar = fr + br + 13;
-      const angs = [180, 214, 248, 282];
+      const br = clamp(H * 0.058, 20, 24);
+      const ar = fr + br + 21;
+      const angs = [175, 205, 235, 265, 295];
       ABILITY_IDS.forEach((id, i) => {
         const a = angs[i] * DEG;
         btns.push({ id, x: fx + Math.cos(a) * ar, y: fy + Math.sin(a) * ar, r: br });
@@ -446,6 +452,12 @@ export class Hud {
       else if (p.repairCd > 0) this.note(`${tr('Repair')} ${Math.ceil(p.repairCd)}s`, '#d8d0b8');
       else if (p.crewAlive().length < 2) this.note(tr('Not enough crew'), '#ff8a5c');
       else this.controls.repair();
+    } else if (id === 'crew' && p) {
+      const cv = b.carrierFor(p);
+      if (cv) this.note(tr('Carrier already on the way'), '#d8d0b8');
+      else if (p.crewCd > 0) this.note(`${tr('Crew carrier')} ${Math.ceil(p.crewCd)}s`, '#d8d0b8');
+      else if (!p.needsCrew()) this.note(tr('No wounded crew'), '#c8c8c0');
+      else this.controls.crew();
     } else if (id === 'zin') this.r.zoomStep(1);
     else if (id === 'zout') {
       this.r.zoomStep(-1);
@@ -670,7 +682,8 @@ export class Hud {
       this.drawOwnMarker(ctx, p);
       this.drawSmokePreview(ctx, p);
       this.drawPenInfo(ctx, W, s);
-      this.drawMoveStick(ctx);
+      this.drawDriveHint(ctx, p);
+      this.drawMoveStick(ctx, p);
       this.drawButtons(ctx, p);
       this.drawFireStick(ctx, p);
       if (this.sight) this.drawSightTouch(ctx);
@@ -887,6 +900,14 @@ export class Hud {
       ctx.closePath();
       ctx.fill();
       ctx.restore();
+    }
+    // crew carriers
+    for (const c of b.carriers) {
+      if (c.state === 'dead') continue;
+      const friend = c.team === b.playerTeam;
+      if (!friend && !b.spottedCarriers[b.playerTeam].has(c.id)) continue;
+      ctx.fillStyle = friend ? '#bfe0ff' : '#ffb0a6';
+      ctx.fillRect(x + c.pos.x * sc - 2, y + c.pos.y * sc - 2, 4, 4);
     }
     // player vision cone
     const p = b.player;
@@ -1105,32 +1126,144 @@ export class Hud {
     ctx.restore();
   }
 
-  private drawMoveStick(ctx: Ctx) {
+  private drawMoveStick(ctx: Ctx, p: Tank) {
     const R = this.stickR();
     const st = this.move;
+    const base = st ? st.base : { x: this.safe.l + R + 28, y: this.r.H - this.safe.b - R - 22 };
+    const ha = p.ang; // hull heading (screen axes = world axes)
     ctx.save();
+    // reverse zone: pushing into the shaded back part of the ring drives backwards
+    const rev = 115 * DEG;
+    ctx.fillStyle = st ? (this.reverseMode ? 'rgba(240,170,70,0.3)' : 'rgba(240,170,70,0.14)') : 'rgba(240,170,70,0.07)';
+    ctx.beginPath();
+    ctx.moveTo(base.x, base.y);
+    ctx.arc(base.x, base.y, R, ha + rev, ha + Math.PI * 2 - rev);
+    ctx.closePath();
+    ctx.fill();
+    if (st) {
+      ctx.fillStyle = 'rgba(20,22,20,0.28)';
+      ctx.beginPath();
+      ctx.arc(base.x, base.y, R, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.strokeStyle = st ? 'rgba(255,255,255,0.4)' : 'rgba(255,255,255,0.14)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(base.x, base.y, R, 0, Math.PI * 2);
+    ctx.stroke();
+    // "R" in the reverse zone, tank-front marker on the ring
+    ctx.font = '700 12px "Barlow Condensed", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = st ? 'rgba(255,200,120,0.85)' : 'rgba(255,200,120,0.4)';
+    ctx.fillText('R', base.x - Math.cos(ha) * R * 0.72, base.y - Math.sin(ha) * R * 0.72 + 1);
+    const fx = base.x + Math.cos(ha) * (R + 1);
+    const fy = base.y + Math.sin(ha) * (R + 1);
+    ctx.fillStyle = st ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.45)';
+    ctx.beginPath();
+    ctx.moveTo(fx + Math.cos(ha) * 9, fy + Math.sin(ha) * 9);
+    ctx.lineTo(fx + Math.cos(ha + 2.4) * 7, fy + Math.sin(ha + 2.4) * 7);
+    ctx.lineTo(fx + Math.cos(ha - 2.4) * 7, fy + Math.sin(ha - 2.4) * 7);
+    ctx.closePath();
+    ctx.fill();
     if (st) {
       const v = { x: st.pos.x - st.base.x, y: st.pos.y - st.base.y };
       const l = Math.hypot(v.x, v.y);
       const k = l > R ? R / l : 1;
-      ctx.fillStyle = 'rgba(20,22,20,0.28)';
-      ctx.strokeStyle = 'rgba(255,255,255,0.4)';
-      ctx.lineWidth = 2;
+      ctx.fillStyle = this.reverseMode ? 'rgba(255,200,120,0.8)' : 'rgba(240,240,235,0.65)';
       ctx.beginPath();
-      ctx.arc(st.base.x, st.base.y, R, 0, Math.PI * 2);
+      ctx.arc(base.x + v.x * k, base.y + v.y * k, R * 0.38, 0, Math.PI * 2);
       ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = 'rgba(240,240,235,0.65)';
+    }
+    ctx.restore();
+  }
+
+  /** Ground arrows around our tank: where the front is, where the stick is taking us and which way it turns. */
+  private drawDriveHint(ctx: Ctx, p: Tank) {
+    const r = this.r;
+    const c = r.toScreen(p.pos);
+    const z = r.zoom;
+    const rad = p.bp.radius;
+    const st = this.move;
+    const R = this.stickR();
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    // chevron at the hull front (amber at the rear while backing up)
+    const backing = p.speed < -0.4 || (this.reverseMode && !!st);
+    const fa = backing ? p.ang + Math.PI : p.ang;
+    const chev = (dist0: number, a: number, size: number, col: string) => {
+      const x = c.x + Math.cos(a) * dist0;
+      const y = c.y + Math.sin(a) * dist0;
+      ctx.strokeStyle = col;
       ctx.beginPath();
-      ctx.arc(st.base.x + v.x * k, st.base.y + v.y * k, R * 0.38, 0, Math.PI * 2);
-      ctx.fill();
-    } else {
-      // hint ring where the move stick usually sits
-      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(this.safe.l + R + 28, this.r.H - this.safe.b - R - 22, R, 0, Math.PI * 2);
+      ctx.moveTo(x + Math.cos(a + 2.5) * size, y + Math.sin(a + 2.5) * size);
+      ctx.lineTo(x, y);
+      ctx.lineTo(x + Math.cos(a - 2.5) * size, y + Math.sin(a - 2.5) * size);
       ctx.stroke();
+    };
+    const fcol = backing ? 'rgba(255,190,100,0.75)' : 'rgba(255,255,255,0.45)';
+    ctx.lineWidth = 2.5;
+    chev((p.spec.look.L / 2 + 1.1) * z, fa, Math.max(5, 0.7 * z), fcol);
+    if (Math.abs(p.speed) > 1) chev((p.spec.look.L / 2 + 2.1) * z, fa, Math.max(5, 0.7 * z), fcol);
+    if (st) {
+      const v = { x: st.pos.x - st.base.x, y: st.pos.y - st.base.y };
+      const m = Math.min(1, Math.hypot(v.x, v.y) / R);
+      if (m >= 0.12) {
+        const want = Math.atan2(v.y, v.x);
+        const rev = this.reverseMode;
+        const col = rev ? 'rgba(255,190,100,0.9)' : 'rgba(170,230,255,0.9)';
+        // travel direction arrow
+        const r1 = (rad + 1.2) * z;
+        const r2 = (rad + 4 + 3 * m) * z;
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 5]);
+        ctx.beginPath();
+        ctx.moveTo(c.x + Math.cos(want) * r1, c.y + Math.sin(want) * r1);
+        ctx.lineTo(c.x + Math.cos(want) * r2, c.y + Math.sin(want) * r2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = col;
+        const tx = c.x + Math.cos(want) * r2;
+        const ty = c.y + Math.sin(want) * r2;
+        ctx.beginPath();
+        ctx.moveTo(tx + Math.cos(want) * 10, ty + Math.sin(want) * 10);
+        ctx.lineTo(tx + Math.cos(want + 2.5) * 8, ty + Math.sin(want + 2.5) * 8);
+        ctx.lineTo(tx + Math.cos(want - 2.5) * 8, ty + Math.sin(want - 2.5) * 8);
+        ctx.closePath();
+        ctx.fill();
+        if (rev) {
+          ctx.font = '700 13px "Barlow Condensed", sans-serif';
+          ctx.textAlign = 'center';
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+          ctx.strokeText('R', tx + Math.cos(want) * 20, ty + Math.sin(want) * 20 + 1);
+          ctx.fillText('R', tx + Math.cos(want) * 20, ty + Math.sin(want) * 20 + 1);
+        }
+        // turn arc from the current travel direction toward the stick direction
+        const cur = rev ? p.ang + Math.PI : p.ang;
+        const d = angDiff(cur, want);
+        if (Math.abs(d) > 6 * DEG) {
+          const ra = (rad + 2.3) * z;
+          ctx.strokeStyle = col;
+          ctx.lineWidth = 2.5;
+          ctx.globalAlpha = 0.8;
+          ctx.beginPath();
+          ctx.arc(c.x, c.y, ra, cur, cur + d, d < 0);
+          ctx.stroke();
+          const ea = cur + d;
+          const ex = c.x + Math.cos(ea) * ra;
+          const ey = c.y + Math.sin(ea) * ra;
+          const ta = ea + (d > 0 ? Math.PI / 2 : -Math.PI / 2); // tangent along the turn
+          ctx.beginPath();
+          ctx.moveTo(ex + Math.cos(ta) * 8, ey + Math.sin(ta) * 8);
+          ctx.lineTo(ex + Math.cos(ta + 2.5) * 7, ey + Math.sin(ta + 2.5) * 7);
+          ctx.lineTo(ex + Math.cos(ta - 2.5) * 7, ey + Math.sin(ta - 2.5) * 7);
+          ctx.closePath();
+          ctx.fill();
+          ctx.globalAlpha = 1;
+        }
+      }
     }
     ctx.restore();
   }
@@ -1356,6 +1489,16 @@ export class Hud {
           ctx.arc(bt.x + Math.cos(st.ang) * kl, bt.y + Math.sin(st.ang) * kl, bt.r! * 0.55, 0, Math.PI * 2);
           ctx.fill();
           ctx.restore();
+        }
+      } else if (bt.id === 'crew') {
+        const cv = this.b.carrierFor(p);
+        if (cv && cv.state === 'park') {
+          this.drawAbility(ctx, bt, tr('CREW'), { active: true, prog: cv.t / CARRIER.PARK, sub: `${Math.max(0, Math.ceil(CARRIER.PARK - cv.t))}s` });
+        } else if (cv && cv.state === 'drive') {
+          this.drawAbility(ctx, bt, tr('CREW'), { active: true, sub: `${Math.round(dist(cv.pos, p.pos))}m` });
+        } else {
+          const need = p.needsCrew();
+          this.drawAbility(ctx, bt, tr('CREW'), { cd: p.crewCd / CARRIER.CD, dim: !need, pulse: need && p.crewCd <= 0 ? 'rgba(160,215,255,1)' : undefined, sub: p.crewCd > 0 ? `${Math.ceil(p.crewCd)}` : undefined });
         }
       } else if (bt.id === 'repair') {
         if (p.burning > 0) {

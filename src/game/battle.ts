@@ -11,7 +11,8 @@ import { VEHICLES, getVehicle, type ShellSpec, type VehicleSpec } from '../data/
 import { AIController } from './ai';
 import { type ImpactResult, fireTick, intersectTank, resolveImpact } from './armor';
 import { Effects } from './effects';
-import { type GameMap, type Tree, buildMap, collideStatic, MAPS, shellObstacleHit, type Contact } from './map';
+import { type GameMap, type Tree, buildMap, collideStatic, losBlocked, MAPS, shellObstacleHit, type Contact } from './map';
+import { CARRIER, type Carrier, carrierHit, driveCarrier } from './carrier';
 import { NavGrid } from './nav';
 import { Tank } from './tank';
 import { canSee, visibilityPolygon } from './vision';
@@ -52,6 +53,7 @@ export type NetFx =
   | { k: 'obs'; x: number; y: number; dx: number; dy: number; c: number; e: number; pid?: number }
   | { k: 'gren'; team: 0 | 1; g: number[][] }
   | { k: 'cloud'; id: number; x: number; y: number; rm: number; life: number; team: 0 | 1 }
+  | { k: 'cdie'; id: number; x: number; y: number }
   | { k: 'kill'; id: number; how: number; vx: number; vy: number; spin: number; vh: number; wf: number }
   | { k: 'tree'; id: number; dir: number }
   | { k: 'wall'; id: number }
@@ -113,6 +115,8 @@ export const TICKETS = 800;
 export const KILL_TICKETS = 45;
 export const BATTLE_TIME = 12 * 60;
 export const TEAM_SIZE = 5;
+/** smoke screen duration (s) */
+export const SMOKE_LIFE = 13;
 /** a queued shot is released once the gun is within this angle of the aim */
 const FIRE_TOL = 0.6 * DEG;
 
@@ -151,6 +155,11 @@ export class Battle {
   private fireTimer = 0;
 
   grenades: Array<{ x0: number; y0: number; x1: number; y1: number; t: number; T: number; team: 0 | 1 }> = [];
+  /** crew carriers on the field */
+  carriers: Carrier[] = [];
+  private carrierId = 1;
+  /** carriers each team can currently see */
+  spottedCarriers: [Set<number>, Set<number>] = [new Set(), new Set()];
   private smokeId = 1;
   private projId = 1;
   battleBR: number;
@@ -311,6 +320,160 @@ export class Battle {
     if (t.alive) t.selectShell(i);
   }
 
+  /** The carrier currently serving tank `t` (if any). */
+  carrierFor(t: Tank | null | undefined): Carrier | undefined {
+    if (!t) return undefined;
+    return this.carriers.find((c) => c.forId === t.id && c.state !== 'dead');
+  }
+
+  /** Call a crew carrier: it drives up from behind our lines and replaces wounded / dead crew. */
+  useCrew(t: Tank): boolean {
+    if (this.mode === 'replica' || !t.alive || t.crewCd > 0 || this.carrierFor(t) || !t.needsCrew()) return false;
+    const sps = this.map.spawns[t.team];
+    let sp = sps[0];
+    let bd = Infinity;
+    for (const s of sps) {
+      const d = dist(s, t.pos);
+      if (d < bd) {
+        bd = d;
+        sp = s;
+      }
+    }
+    // start a little further back than the spawn line (spawns face the battlefield)
+    const S = this.map.size;
+    let home = { x: clamp(sp.x - Math.cos(sp.ang) * 12, 8, S - 8), y: clamp(sp.y - Math.sin(sp.ang) * 12, 8, S - 8) };
+    if (this.nav && !this.nav.free(home)) home = { x: sp.x, y: sp.y };
+    const c: Carrier = {
+      id: this.carrierId++,
+      team: t.team,
+      forId: t.id,
+      nation: t.spec.nation,
+      pos: { ...home },
+      ang: Math.atan2(t.pos.y - home.y, t.pos.x - home.x),
+      speed: 0,
+      path: this.nav?.findPath(home, t.pos) ?? [{ ...t.pos }],
+      state: 'drive',
+      t: 0,
+      home,
+      repath: 1.5,
+      age: 0,
+    };
+    this.carriers.push(c);
+    if (t.slot) this.emit({ type: 'notice', text: 'Crew carrier on the way', color: '#9fd3ff', to: t.slot });
+    return true;
+  }
+
+  private updateCarriers(dt: number) {
+    const blockers = this.tanks.filter((x) => x.alive).map((x) => x.bp.hullPoly.map((q) => toWorld(q, x.pos, x.ang)));
+    for (const c of this.carriers) {
+      c.age += dt;
+      if (c.state === 'dead') {
+        c.t += dt;
+        continue;
+      }
+      const t = this.tanks.find((x) => x.id === c.forId);
+      if (c.state !== 'leave' && (!t || !t.alive)) {
+        c.state = 'leave';
+        c.t = 0;
+        c.path = this.nav?.findPath(c.pos, c.home) ?? [c.home];
+      }
+      if (c.state === 'drive' && t) {
+        c.repath -= dt;
+        if (c.repath <= 0) {
+          c.repath = 1.5;
+          c.path = this.nav?.findPath(c.pos, t.pos) ?? [{ ...t.pos }];
+        }
+        if (dist(c.pos, t.pos) < CARRIER.REACH) {
+          c.state = 'park';
+          c.t = 0;
+        } else driveCarrier(c, this.map, t.pos, CARRIER.REACH - 1, dt, blockers);
+      } else if (c.state === 'park' && t) {
+        c.speed = Math.max(0, c.speed - 20 * dt);
+        if (dist(c.pos, t.pos) > CARRIER.REACH + 3.5) {
+          // the tank drove off: follow it and start over
+          c.state = 'drive';
+          c.repath = 0;
+          c.t = 0;
+        } else {
+          c.t += dt;
+          if (c.t >= CARRIER.PARK) {
+            this.replaceCrew(t);
+            c.state = 'leave';
+            c.t = 0;
+            c.path = this.nav?.findPath(c.pos, c.home) ?? [c.home];
+          }
+        }
+      } else if (c.state === 'leave') {
+        c.t += dt;
+        driveCarrier(c, this.map, c.home, 0, dt, blockers);
+      }
+    }
+    // drive-offs reaching home and old wrecks disappear
+    this.carriers = this.carriers.filter((c) => !(c.state === 'leave' && (dist(c.pos, c.home) < 5 || c.t > 30)) && !(c.state === 'dead' && c.t > 40));
+  }
+
+  /** Fresh crew for every wounded or dead seat. */
+  private replaceCrew(t: Tank) {
+    for (const m of t.mods) {
+      if (m.def.kind !== 'crew') continue;
+      m.hp = m.def.maxHp;
+      m.role = m.def.role;
+    }
+    t.pendingSwapRole = null;
+    t.crewSwap = 0;
+    t.crewCd = CARRIER.CD;
+    if (t.slot) this.emit({ type: 'notice', text: 'Crew replaced', color: '#9fd3ff', to: t.slot });
+  }
+
+  /** A carrier was hit: it burns out and the crew swap is lost (no score for the shooter). */
+  killCarrier(c: Carrier) {
+    if (c.state === 'dead') return;
+    c.state = 'dead';
+    c.t = 0;
+    c.speed = 0;
+    this.fxCarrierDeath(c);
+    const t = this.tanks.find((x) => x.id === c.forId);
+    if (t && t.alive) {
+      t.crewCd = CARRIER.CD_LOST;
+      if (t.slot) this.emit({ type: 'notice', text: 'Crew carrier destroyed!', color: '#ff8a5c', to: t.slot });
+    }
+  }
+
+  fxCarrierDeath(c: Carrier) {
+    this.fx.explosion(c.pos.x, c.pos.y, 0.75);
+    audio.explosion(0.9, this.listenerDist(c.pos));
+    this.stampDecal('scorch', c.pos.x, c.pos.y, 3.2);
+    this.netOut?.push({ k: 'cdie', id: c.id, x: r2(c.pos.x), y: r2(c.pos.y) });
+  }
+
+  /** Burning wrecks, dust behind fast carriers (local, host and replica). */
+  private carrierFx(dt: number) {
+    for (const c of this.carriers) {
+      if (c.state === 'dead') {
+        if (c.t < 18 && rand.chance(dt * 30)) this.fx.fire(c.pos.x + rand.range(-1.2, 1.2), c.pos.y + rand.range(-0.6, 0.6), 1);
+        if (rand.chance(dt * (c.t < 18 ? 8 : 1.5))) this.fx.smoke(c.pos.x, c.pos.y, true, 1.6);
+      } else if (c.speed > 4 && rand.chance(dt * 12)) {
+        const p = toWorld({ x: -CARRIER.L / 2, y: rand.range(-0.8, 0.8) }, c.pos, c.ang);
+        this.fx.trackDust(p.x, p.y, c.speed);
+      }
+    }
+  }
+
+  /** Is the point visible to this team's tanks (simplified spotting used for carriers)? */
+  private teamSees(team: 0 | 1, p: V2): boolean {
+    for (const v of this.tanks) {
+      if (!v.alive || v.team !== team) continue;
+      const vc = v.visionCone();
+      const tp = v.turretPos();
+      const d = dist(tp, p);
+      if (d > vc.range) continue;
+      const inCone = Math.abs(angDiff(v.gunWorldAng, Math.atan2(p.y - tp.y, p.x - tp.x))) <= vc.half;
+      if (!inCone && d > vc.near) continue;
+      if (!losBlocked(this.map, tp, p)) return true;
+    }
+    return false;
+  }
+
   extinguish(t: Tank) {
     if (t.burning <= 0 || t.extinguishCd > 0) return false;
     t.burning = 0;
@@ -373,6 +536,7 @@ export class Battle {
       this.launchSmoke(t, a);
     }
     this.updateSmoke(dt);
+    this.updateCarriers(dt);
 
     // queued shots (fire button released while reloading / turret still traversing)
     for (const t of this.tanks) {
@@ -400,6 +564,7 @@ export class Battle {
     this.updateProjectiles(dt);
     this.updateFires(dt);
     this.updateWrecks(dt);
+    this.carrierFx(dt);
     this.fx.update(dt);
 
     this.spotTimer -= dt;
@@ -542,6 +707,18 @@ export class Battle {
       case 'cloud':
         if (!this.map.smokes.some((s) => s.id === e.id)) this.map.smokes.push({ id: e.id, x: e.x, y: e.y, r: 1.5, rMax: e.rm, age: 0, life: e.life, team: e.team });
         break;
+      case 'cdie': {
+        const c = this.carriers.find((x) => x.id === e.id);
+        if (c) {
+          c.state = 'dead';
+          c.t = 0;
+          c.speed = 0;
+          c.pos = { x: e.x, y: e.y };
+        }
+        this.fx.explosion(e.x, e.y, 0.75);
+        audio.explosion(0.9, this.listenerDist({ x: e.x, y: e.y }));
+        break;
+      }
       case 'kill': {
         const t = this.tanks.find((x) => x.id === e.id);
         if (!t) break;
@@ -633,7 +810,7 @@ export class Battle {
         continue;
       }
       if (this.mode !== 'replica') {
-        const c = { id: this.smokeId++, x: g.x1, y: g.y1, r: 1.5, rMax: rand.range(7.5, 9), age: 0, life: 24, team: g.team };
+        const c = { id: this.smokeId++, x: g.x1, y: g.y1, r: 1.5, rMax: rand.range(7.5, 9), age: 0, life: SMOKE_LIFE, team: g.team };
         this.map.smokes.push(c);
         this.netOut?.push({ k: 'cloud', id: c.id, x: r2(c.x), y: r2(c.y), rm: r2(c.rMax), life: c.life, team: c.team });
       }
@@ -776,6 +953,20 @@ export class Battle {
         if (h && (!best || h.t < best.t)) best = { t: h.t, tank: t, hit: h };
       }
       const obs = shellObstacleHit(this.map, a, b);
+      // thin-skinned crew carriers
+      let cHit: { t: number; c: Carrier } | null = null;
+      for (const c of this.carriers) {
+        if (c.state === 'dead' || (c.team === p.shooter.team && p.age < 0.25)) continue;
+        const ht = carrierHit(c, a, b);
+        if (ht !== null && (!cHit || ht < cHit.t)) cHit = { t: ht, c };
+      }
+      if (cHit && (!best || cHit.t < best.t) && (!obs || cHit.t < obs.t)) {
+        const x = a.x + (b.x - a.x) * cHit.t;
+        const y = a.y + (b.y - a.y) * cHit.t;
+        this.fxObstacle(x, y, p.dx, p.dy, p.shell.caliber, p.shell.type === 'HE' ? p.shell.explosive : 0, p.id);
+        this.killCarrier(cHit.c);
+        continue;
+      }
       if (obs && (!best || obs.t < best.t)) {
         const x = a.x + (b.x - a.x) * obs.t;
         const y = a.y + (b.y - a.y) * obs.t;
@@ -819,6 +1010,9 @@ export class Battle {
   /** HE shells exploding near (not on) a tank can still damage tracks / open-top crews. */
   private splash(p: Projectile, x: number, y: number) {
     const r = 1.5 + Math.cbrt(p.shell.explosive) * 0.15;
+    for (const c of this.carriers) {
+      if (c.state !== 'dead' && dist(c.pos, { x, y }) < r + CARRIER.L * 0.35) this.killCarrier(c);
+    }
     for (const t of this.tanks) {
       if (!t.alive) continue;
       const d = dist(t.pos, { x, y }) - t.bp.radius * 0.7;
@@ -969,6 +1163,11 @@ export class Battle {
   }
 
   private updateSpotting(now: number) {
+    for (const team of [0, 1] as const) {
+      const sc = this.spottedCarriers[team];
+      sc.clear();
+      for (const c of this.carriers) if (c.team !== team && c.state !== 'dead' && this.teamSees(team, c.pos)) sc.add(c.id);
+    }
     for (const team of [0, 1] as const) {
       const set = this.spotted[team];
       set.clear();
@@ -1173,10 +1372,26 @@ export class Battle {
       keep.push(p);
     }
     this.projectiles = keep;
+    // carriers glide toward their snapshot pose
+    for (const c of this.carriers) {
+      const n = c.net;
+      if (n) {
+        if (c.state !== 'dead') {
+          n.x += Math.cos(n.ang) * c.speed * dt;
+          n.y += Math.sin(n.ang) * c.speed * dt;
+        }
+        const k = Math.min(1, dt * 8);
+        c.pos.x += (n.x - c.pos.x) * k;
+        c.pos.y += (n.y - c.pos.y) * k;
+        c.ang += angDiff(c.ang, n.ang) * k;
+      }
+      if (c.state === 'park' || c.state === 'dead') c.t += dt;
+    }
     this.trackMarks(dt);
     this.updateSmoke(dt);
     this.updateFires(dt);
     this.updateWrecks(dt);
+    this.carrierFx(dt);
     this.fx.update(dt);
     this.updateVision(dt);
   }

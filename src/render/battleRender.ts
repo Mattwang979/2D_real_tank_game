@@ -5,6 +5,7 @@ import { plateMap, predictShot, type Prediction } from '../game/armor';
 import type { Battle } from '../game/battle';
 import { shellObstacleHit } from '../game/map';
 import type { Tank } from '../game/tank';
+import { drawCarrier, drawCrewWalk } from './carrierRender';
 import { MapRenderer } from './mapRender';
 import { blitPart, getBurnt, getTankSprites, makeCanvas } from './tankRender';
 
@@ -194,6 +195,16 @@ export class BattleRenderer {
     // wrecks first, then live tanks
     for (const t of visible) if (!t.alive) this.drawTank(ctx, t);
     for (const t of visible) if (t.alive) this.drawTank(ctx, t);
+    // crew carriers (ours always, the enemy's when spotted)
+    for (const c of b.carriers) {
+      if (c.pos.x < x0 - 8 || c.pos.x > x1 + 8 || c.pos.y < y0 - 8 || c.pos.y > y1 + 8) continue;
+      if (c.team !== b.playerTeam && c.state !== 'dead' && !b.spottedCarriers[b.playerTeam].has(c.id)) continue;
+      drawCarrier(ctx, c, b.map.shadow);
+      if (c.state === 'park') {
+        const t = b.tanks.find((x) => x.id === c.forId);
+        if (t) drawCrewWalk(ctx, c, t.pos, b.time);
+      }
+    }
     b.fx.draw(ctx, false, x0, y0, x1, y1);
     this.drawProjectiles(ctx);
     this.mapR.drawBuildings(ctx, x0, y0, x1, y1);
@@ -545,6 +556,30 @@ export class BattleRenderer {
         ctx.textAlign = 'center';
         ctx.fillStyle = friend ? 'rgba(190,215,255,0.9)' : 'rgba(255,190,180,0.85)';
         ctx.fillText(label, t.pos.x, y - 1.3 * mk);
+      }
+    }
+
+    // carrier markers
+    for (const c of b.carriers) {
+      if (c.state === 'dead') continue;
+      const friend = c.team === b.playerTeam;
+      if (!friend && !b.spottedCarriers[b.playerTeam].has(c.id)) continue;
+      const y = c.pos.y - 3.4 - mk;
+      ctx.fillStyle = friend ? TEAM_COL.friend : TEAM_COL.enemy;
+      ctx.beginPath();
+      ctx.moveTo(c.pos.x, y - 0.7 * mk);
+      ctx.lineTo(c.pos.x + 0.6 * mk, y);
+      ctx.lineTo(c.pos.x, y + 0.7 * mk);
+      ctx.lineTo(c.pos.x - 0.6 * mk, y);
+      ctx.closePath();
+      ctx.fill();
+      if (c.state === 'park') {
+        // swap progress ring
+        ctx.strokeStyle = 'rgba(160,215,255,0.95)';
+        ctx.lineWidth = 0.3 * mk;
+        ctx.beginPath();
+        ctx.arc(c.pos.x, y, 1.3 * mk, -Math.PI / 2, -Math.PI / 2 + Math.min(1, c.t / 4) * Math.PI * 2);
+        ctx.stroke();
       }
     }
 

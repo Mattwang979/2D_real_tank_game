@@ -213,6 +213,13 @@ const ZH: Record<string, string> = {
   'Multiplayer battles keep running.': '多人戰鬥不會暫停。',
   'Leaving ends the battle for everyone': '你離開的話，所有人的戰鬥都會結束',
   OFFLINE: '已離線',
+  CREW: '補員',
+  'Crew carrier on the way': '運兵車出發了',
+  'Crew replaced': '傷兵已替換',
+  'Crew carrier destroyed!': '運兵車被擊毀了！',
+  'No wounded crew': '沒有傷兵',
+  'Crew carrier': '運兵車',
+  'Carrier already on the way': '運兵車已在路上',
   'HOST NOT RESPONDING': '房主沒有回應',
 };
 

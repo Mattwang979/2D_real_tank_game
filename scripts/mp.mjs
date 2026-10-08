@@ -141,6 +141,16 @@ await host.waitForTimeout(2000);
 const bytes = await host.evaluate(() => window.__bytes);
 log(`host upload ≈ ${(bytes / 1024 / 3.4).toFixed(1)} KB/s per client`);
 
+// crew carrier called by the client
+await host.evaluate(() => {
+  const t = window.__pen.battle.slots.find((x) => x.key !== 'host').tank;
+  t.mods.filter((m) => m.def.kind === 'crew')[1].hp = 0;
+});
+await client.waitForTimeout(400);
+await client.evaluate(() => window.__pen.hud.controls.crew());
+check('client crew carrier appears on both', (await waitFor(host, () => window.__pen.battle.carriers.length === 1, null, 4000)) && (await waitFor(client, () => window.__pen.battle.carriers.length === 1, null, 4000)));
+const cpos = await Promise.all([host.evaluate(() => window.__pen.battle.carriers[0]?.pos), client.evaluate(() => window.__pen.battle.carriers[0]?.pos)]);
+check('carrier position in sync', cpos[0] && cpos[1] && Math.hypot(cpos[0].x - cpos[1].x, cpos[0].y - cpos[1].y) < 4, JSON.stringify(cpos));
 // smoke from the client
 await client.evaluate(() => window.__pen.hud.controls.smoke(0));
 check('client smoke creates clouds on both', (await waitFor(host, () => window.__pen.battle.map.smokes.length >= 3, null, 4000)) && (await waitFor(client, () => window.__pen.battle.map.smokes.length >= 3, null, 4000)));

@@ -48,6 +48,7 @@ export interface MeState {
   cs?: number; // crew swap timer
   cr?: string | null; // pending swap role
   fq?: number; // queued shot
+  cc?: number; // crew carrier cooldown
   rw?: RewardLine[]; // new reward lines since the last snapshot
   st?: SlotStats;
 }
@@ -59,8 +60,14 @@ export interface Snapshot {
   cap: [number, number, number, number, number]; // owner, progress, contested, inside0, inside1
   sp: [number[], number[]];
   t: TankState[];
+  /** crew carriers: [id, team, forId, x, y, ang, speed, state, t, nation] */
+  cv: CarrierState[];
+  /** carriers spotted by each team */
+  csp: [number[], number[]];
   me: MeState;
 }
+
+export type CarrierState = [number, number, number, number, number, number, number, number, number, string];
 
 export type NetEvent =
   | { e: 'hit'; s: number; tg: number; r: ImpactResult }
@@ -86,7 +93,7 @@ export type ClientMsg =
   | { t: 'lineup'; lineup: string[] }
   | { t: 'in'; th: number; st: number; hb: number; aim: number }
   | { t: 'act'; a: 'fire'; aim: number }
-  | { t: 'act'; a: 'cancel' | 'boost' | 'repair' }
+  | { t: 'act'; a: 'cancel' | 'boost' | 'repair' | 'crew' }
   | { t: 'act'; a: 'shell'; i: number }
   | { t: 'act'; a: 'smoke'; ang: number }
   | { t: 'act'; a: 'spawn'; id: string }

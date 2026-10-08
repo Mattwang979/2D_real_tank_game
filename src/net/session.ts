@@ -11,7 +11,8 @@ import { Tank } from '../game/tank';
 import { VEHICLES, getVehicle } from '../data/vehicles';
 import type { Controls } from '../ui/hud';
 import { connectTo, type DataConnection, makeCode, NetError, openPeer, type Peer, PROTOCOL, ROOM_PREFIX } from './peer';
-import type { ClientMsg, HostMsg, LobbyPlayer, MeState, NetEvent, Snapshot, TankInfo, TankState } from './protocol';
+import { CARRIER_STATES, type Carrier } from '../game/carrier';
+import type { CarrierState, ClientMsg, HostMsg, LobbyPlayer, MeState, NetEvent, Snapshot, TankInfo, TankState } from './protocol';
 import { r2, r3 } from './protocol';
 
 export const MAX_PLAYERS = 10;
@@ -288,6 +289,7 @@ class HostGame implements NetSession {
         else if (m.a === 'smoke') b.useSmoke(t, Number(m.ang));
         else if (m.a === 'boost') b.useBoost(t);
         else if (m.a === 'repair') b.useRepair(t);
+        else if (m.a === 'crew') b.useCrew(t);
         break;
       }
       case 'ping':
@@ -420,7 +422,10 @@ class HostGame implements NetSession {
       ts.push([t.id, r2(t.pos.x), r2(t.pos.y), r3(t.ang), r3(t.turretRel), r3(t.gunRel), r2(t.speed), r2(t.vel.x), r2(t.vel.y), flags]);
     }
     const c = b.capture;
+    const cv: CarrierState[] = b.carriers.map((k) => [k.id, k.team, k.forId, r2(k.pos.x), r2(k.pos.y), r3(k.ang), r2(k.speed), CARRIER_STATES.indexOf(k.state), r2(k.t), k.nation]);
     return {
+      cv,
+      csp: [[...b.spottedCarriers[0]], [...b.spottedCarriers[1]]],
       tm: r2(b.time),
       tk: [r2(b.tickets[0]), r2(b.tickets[1])],
       rf: [b.reinforcements[0], b.reinforcements[1]],
@@ -454,6 +459,7 @@ class HostGame implements NetSession {
       me.cs = r2(t.crewSwap);
       me.cr = t.pendingSwapRole;
       me.fq = t.fireReq ? 1 : 0;
+      me.cc = r2(t.crewCd);
     }
     const n = this.rwSent.get(key) ?? 0;
     if (s.rewards.length > n) {
@@ -658,6 +664,7 @@ export class ClientGame implements NetSession {
       smoke: (ang) => act({ t: 'act', a: 'smoke', ang: r3(ang) }),
       boost: () => act({ t: 'act', a: 'boost' }),
       repair: () => act({ t: 'act', a: 'repair' }),
+      crew: () => act({ t: 'act', a: 'crew' }),
       respawn: (id) => act({ t: 'act', a: 'spawn', id }),
     };
   }
@@ -719,6 +726,7 @@ export class ClientGame implements NetSession {
     b.capture.inside = [s.cap[3], s.cap[4]];
     b.spotted[0] = new Set(s.sp[0]);
     b.spotted[1] = new Set(s.sp[1]);
+    this.syncCarriers(s);
     const meTank = s.me.id !== null ? this.byId.get(s.me.id) : undefined;
     for (const st of s.t) {
       const t = this.byId.get(st[0]);
@@ -794,11 +802,35 @@ export class ClientGame implements NetSession {
         t.crewSwap = me.cs ?? 0;
         t.pendingSwapRole = (me.cr ?? null) as typeof t.pendingSwapRole;
         if (!me.fq && t.fireReq && performance.now() - this.fireSentAt > this.rtt + 150) t.fireReq = null;
+        t.crewCd = me.cc ?? 0;
       }
     }
     if (me.rw) slot.rewards.push(...me.rw);
     if (me.st) slot.stats = me.st;
     if (slot.tank) this.readyOk();
+  }
+
+  private syncCarriers(s: Snapshot) {
+    const b = this.b;
+    const lat = this.lat;
+    const keep: Carrier[] = [];
+    for (const v of s.cv ?? []) {
+      const [id, team, forId, x, y, ang, speed, st, t, nation] = v;
+      let c = b.carriers.find((k) => k.id === id);
+      const state = CARRIER_STATES[st] ?? 'drive';
+      if (!c) {
+        c = { id, team: team as 0 | 1, forId, nation, pos: { x, y }, ang, speed, path: [], state, t, home: { x, y }, repath: 0, age: 0 };
+      }
+      c.state = state;
+      c.t = t;
+      c.speed = state === 'dead' ? 0 : speed;
+      c.net = { x: x + Math.cos(ang) * c.speed * lat, y: y + Math.sin(ang) * c.speed * lat, ang };
+      if (state === 'dead') c.pos = { x, y };
+      keep.push(c);
+    }
+    b.carriers = keep;
+    b.spottedCarriers[0] = new Set(s.csp?.[0] ?? []);
+    b.spottedCarriers[1] = new Set(s.csp?.[1] ?? []);
   }
 
   private tank(id: number | null): Tank | null {

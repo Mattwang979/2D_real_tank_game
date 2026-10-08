@@ -47,6 +47,8 @@ export class Tank {
   repairCd = 0;
   smokeCharges = 2;
   smokeCd = 0;
+  /** crew-carrier cooldown */
+  crewCd = 0;
   /** request from controls: launch smoke toward this world angle */
   wantSmoke: number | null = null;
   /** queued shot: fires as soon as the gun is loaded and on the aim angle (until `until`) */
@@ -257,6 +259,7 @@ export class Tank {
     if (this.boostCd > 0) this.boostCd -= dt;
     if (this.repairCd > 0) this.repairCd -= dt;
     if (this.smokeCd > 0) this.smokeCd -= dt;
+    if (this.crewCd > 0) this.crewCd -= dt;
 
     this.updateCrew(dt);
     this.updateRepair(dt);
@@ -264,8 +267,8 @@ export class Tank {
   }
 
   // ---------------------------------------------------------------- abilities
-  static readonly BOOST_TIME = 4;
-  static readonly BOOST_CD = 20;
+  static readonly BOOST_TIME = 8;
+  static readonly BOOST_CD = 25;
   static readonly REPAIR_TIME = 6;
   static readonly REPAIR_CD = 35;
 
@@ -289,6 +292,15 @@ export class Tank {
     if (!this.canRepair()) return false;
     this.repairT = Tank.REPAIR_TIME;
     return true;
+  }
+  /** Any crew member hurt or dead (a crew carrier would replace them)? */
+  needsCrew(): boolean {
+    return this.mods.some((m) => m.def.kind === 'crew' && m.hp < m.def.maxHp * 0.9);
+  }
+  /** Worth calling the carrier for (AI): somebody dead or two badly wounded. */
+  needsCrewBadly(): boolean {
+    const crew = this.mods.filter((m) => m.def.kind === 'crew');
+    return crew.some((m) => m.hp <= 0) || crew.filter((m) => m.hp < m.def.maxHp * 0.55).length >= 2;
   }
   canSmoke(): boolean {
     return this.alive && this.smokeCharges > 0 && this.smokeCd <= 0;
