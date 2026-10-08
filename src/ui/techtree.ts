@@ -225,7 +225,7 @@ export class TechTree {
           h('div', { class: 'stat' }, h('span', {}, t('Crew')), h('b', {}, `${v.crew.length}`)),
         ),
         h('div', { style: 'font-size:12px;color:var(--dim);margin-top:6px' }, `${v.gun.name} · ${v.gun.shells.map((x) => x.name).join(' / ')}`),
-        st === 'researchable' || st === 'locked' ? h('div', { style: 'margin-top:6px;font-size:12px' }, `${t('Research progress')}: ${formatNum(prog)} / ${formatNum(v.rp)} RP`, h('div', { class: 'progress' }, h('i', { style: `width:${(prog / v.rp) * 100}%` }))) : null,
+        st === 'researchable' || st === 'locked' ? h('div', { style: 'margin-top:6px;font-size:12px' }, `${t('Research progress')}: ${formatNum(prog)} / ${formatNum(v.rp)} RP`, h('div', { class: 'progress' }, h('i', { style: `transform:scaleX(${Math.min(1, prog / v.rp)})` }))) : null,
         msg,
         btns,
       ),

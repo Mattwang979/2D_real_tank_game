@@ -39,9 +39,9 @@ export function showResults(el: HTMLElement, b: Battle, onContinue: () => void) 
   if (researchingBefore) {
     const v = getVehicle(researchingBefore);
     const after = unlocked === researchingBefore ? v.rp : s.research[researchingBefore] ?? 0;
-    const bar = h('i', { style: `width:${(progBefore / v.rp) * 100}%` });
+    const bar = h('i', { style: `transform:scaleX(${Math.min(1, progBefore / v.rp)})` });
     research.append(h('div', { class: 'label' }, `${t('Research progress')} — ${v.name}`), h('div', { class: 'progress' }, bar), h('div', { style: 'font-size:13px;margin-top:3px;color:var(--dim)' }, `${formatNum(after)} / ${formatNum(v.rp)} RP`));
-    requestAnimationFrame(() => requestAnimationFrame(() => (bar.style.width = `${Math.min(100, (after / v.rp) * 100)}%`)));
+    requestAnimationFrame(() => requestAnimationFrame(() => (bar.style.transform = `scaleX(${Math.min(1, after / v.rp)})`)));
   } else {
     research.append(h('div', { style: 'font-size:13px;color:var(--dim)' }, `${t('Free RP')}: ${formatNum(s.rpFree)}`));
   }
