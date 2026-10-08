@@ -184,6 +184,82 @@ class Audio {
     n.stop(t + 0.4);
   }
 
+  /** Incoming artillery shell: a falling whistle. */
+  whistle(dist: number, dur = 1.1) {
+    if (!this.ctx || !this.master || !this.throttle('whistle', 180)) return;
+    const g0 = this.att(dist) * 0.35;
+    if (g0 < 0.02) return;
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(1500 + Math.random() * 300, t);
+    o.frequency.exponentialRampToValueAtTime(420, t + dur);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(g0, t + dur * 0.7);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(g).connect(this.master);
+    o.start(t);
+    o.stop(t + dur + 0.05);
+  }
+
+  /** Propeller drone of a passing aircraft (fades in and out over `dur` seconds). */
+  plane(dur: number, loud = 0.12) {
+    if (!this.ctx || !this.master) return;
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(92, t);
+    o.frequency.linearRampToValueAtTime(78, t + dur);
+    const lfo = this.ctx.createOscillator();
+    lfo.frequency.value = 17;
+    const lfoG = this.ctx.createGain();
+    lfoG.gain.value = 0.35;
+    const trem = this.ctx.createGain();
+    trem.gain.value = 0.65;
+    lfo.connect(lfoG).connect(trem.gain);
+    const f = this.ctx.createBiquadFilter();
+    f.type = 'lowpass';
+    f.frequency.value = 520;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(loud, t + dur * 0.45);
+    g.gain.linearRampToValueAtTime(0.0001, t + dur);
+    o.connect(f).connect(trem).connect(g).connect(this.master);
+    o.start(t);
+    lfo.start(t);
+    o.stop(t + dur + 0.1);
+    lfo.stop(t + dur + 0.1);
+  }
+
+  /** Radio squelch before a callout. */
+  radio() {
+    if (!this.ctx || !this.master || !this.throttle('radio', 250)) return;
+    const t = this.ctx.currentTime;
+    const n = this.noiseSrc()!;
+    const f = this.ctx.createBiquadFilter();
+    f.type = 'bandpass';
+    f.frequency.value = 1800;
+    f.Q.value = 0.8;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.12, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+    n.connect(f).connect(g).connect(this.master);
+    n.start(t, Math.random());
+    n.stop(t + 0.18);
+    const o = this.ctx.createOscillator();
+    o.type = 'square';
+    o.frequency.setValueAtTime(880, t + 0.02);
+    o.frequency.setValueAtTime(1180, t + 0.08);
+    const og = this.ctx.createGain();
+    og.gain.setValueAtTime(0.0001, t);
+    og.gain.linearRampToValueAtTime(0.05, t + 0.03);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+    o.connect(og).connect(this.master);
+    o.start(t);
+    o.stop(t + 0.16);
+  }
+
   click() {
     if (!this.ctx || !this.master) return;
     const t = this.ctx.currentTime;

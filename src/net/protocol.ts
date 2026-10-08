@@ -49,6 +49,7 @@ export interface MeState {
   cr?: string | null; // pending swap role
   fq?: number; // queued shot
   cc?: number; // crew carrier cooldown
+  su?: [number, number, number]; // support: recon, artillery, streak
   rw?: RewardLine[]; // new reward lines since the last snapshot
   st?: SlotStats;
 }
@@ -64,6 +65,10 @@ export interface Snapshot {
   cv: CarrierState[];
   /** carriers spotted by each team */
   csp: [number[], number[]];
+  /** recon flights: [id, team, x0, y0, x1, y1, t, T] */
+  rc: number[][];
+  /** artillery strikes: [id, team, x, y, t, ...impact times] */
+  ar: number[][];
   me: MeState;
 }
 
@@ -73,7 +78,7 @@ export type NetEvent =
   | { e: 'hit'; s: number; tg: number; r: ImpactResult }
   | { e: 'pop'; tx: string; x: number; y: number; c: string; b?: number }
   | { e: 'feed'; k: number | null; v: number; h: string }
-  | { e: 'note'; tx: string; c?: string }
+  | { e: 'note'; tx: string; c?: string; tm?: 0 | 1 }
   | { e: 'cap'; tm: 0 | 1 }
   | { e: 'dead'; k: number | null; r: ImpactResult | null };
 
@@ -93,7 +98,8 @@ export type ClientMsg =
   | { t: 'lineup'; lineup: string[] }
   | { t: 'in'; th: number; st: number; hb: number; aim: number }
   | { t: 'act'; a: 'fire'; aim: number }
-  | { t: 'act'; a: 'cancel' | 'boost' | 'repair' | 'crew' }
+  | { t: 'act'; a: 'cancel' | 'boost' | 'repair' | 'crew' | 'recon' }
+  | { t: 'act'; a: 'arty'; x: number; y: number }
   | { t: 'act'; a: 'shell'; i: number }
   | { t: 'act'; a: 'smoke'; ang: number }
   | { t: 'act'; a: 'spawn'; id: string }

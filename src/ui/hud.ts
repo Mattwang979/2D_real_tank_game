@@ -11,6 +11,7 @@ import { audio } from '../core/audio';
 import type { Battle, BattleEvent } from '../game/battle';
 import { BATTLE_TIME, TICKETS } from '../game/battle';
 import { CARRIER } from '../game/carrier';
+import { ARTY } from '../game/support';
 import { bermCover } from '../game/map';
 import { Tank } from '../game/tank';
 import { TEAM_COL, predColor, type BattleRenderer } from '../render/battleRender';
@@ -29,6 +30,8 @@ export interface Controls {
   boost(): void;
   repair(): void;
   crew(): void;
+  recon(): void;
+  arty(x: number, y: number): void;
   respawn(id: string): void;
 }
 
@@ -62,6 +65,14 @@ export function localControls(b: Battle): Controls {
     crew: () => {
       const p = me();
       if (p) b.useCrew(p);
+    },
+    recon: () => {
+      const p = me();
+      if (p) b.useRecon(p);
+    },
+    arty: (x, y) => {
+      const p = me();
+      if (p) b.useArty(p, x, y);
     },
     respawn: (id) => b.respawnPlayer(id),
   };
@@ -143,6 +154,11 @@ export class Hud {
   private prevRecoil = 0;
   /** our tank is hull-down against the nearest enemy */
   hullDown = false;
+  /** choosing an artillery target */
+  targeting = false;
+  private aimPt: { id: number; pos: V2 } | null = null;
+  /** targeting: a quick tap on the drive side also picks the target */
+  private tapCand: { id: number; pos: V2; t: number } | null = null;
   private hullDownT = 0;
 
   constructor(b: Battle, r: BattleRenderer, canvas: HTMLCanvasElement, controls?: Controls) {
@@ -193,6 +209,15 @@ export class Hud {
         btns.push({ id, x: fx + Math.cos(a) * ar, y: fy + Math.sin(a) * ar, r: br });
       });
       this.arcTop = fy - ar - br - 6;
+      // situational buttons on an outer arc (killstreak support, flares at night)
+      const outer = this.outerIds(p);
+      const ro = ar + br * 2 + 14;
+      const oangs = [212, 238, 264];
+      outer.forEach((id, i) => {
+        const a = oangs[i] * DEG;
+        btns.push({ id, x: fx + Math.cos(a) * ro, y: fy + Math.sin(a) * ro, r: br });
+      });
+      if (outer.length) this.arcTop = Math.min(this.arcTop, fy + Math.sin(oangs[Math.min(outer.length, 3) - 1] * DEG) * ro - br - 6);
       // ammo row to the left of the arc
       const n = p.spec.gun.shells.length;
       const bw = 54;
@@ -211,6 +236,20 @@ export class Hud {
       btns.push({ id: 'leave', x: W - s.r - 150, y: H - s.b - 44, w: 136, h: 30 });
     }
     this.buttons = btns;
+  }
+
+  /** Which situational buttons to show on the outer arc. */
+  private outerIds(p: Tank): string[] {
+    const ids: string[] = [];
+    const st = this.b.supportOf(p);
+    if (st.recon > 0) ids.push('recon');
+    if (st.arty > 0) ids.push('arty');
+    return ids;
+  }
+
+  private minimapRect() {
+    const size = clamp(this.r.H * 0.3, 96, 128);
+    return { x: this.safe.l + 10, y: this.safe.t + 10, size };
   }
 
   private hitButton(x: number, y: number): Btn | null {
@@ -272,6 +311,19 @@ export class Hud {
     }
     if (!this.playing()) return;
     const W = this.r.W;
+    if (this.targeting) {
+      const mm = this.minimapRect();
+      if (p.x >= mm.x && p.x <= mm.x + mm.size && p.y >= mm.y && p.y <= mm.y + mm.size) {
+        const S = this.b.map.size;
+        this.callArty({ x: ((p.x - mm.x) / mm.size) * S, y: ((p.y - mm.y) / mm.size) * S });
+        return;
+      }
+      if (p.x >= W * 0.45 && Math.hypot(p.x - this.fireC.x, p.y - this.fireC.y) > this.fireC.r + 10) {
+        this.aimPt = { id: e.pointerId, pos: p };
+        this.capture(e);
+        return;
+      }
+    }
     const fc = this.fireC;
     if (Math.hypot(p.x - fc.x, p.y - fc.y) <= fc.r + 10) {
       if (!this.fireStick) {
@@ -281,6 +333,7 @@ export class Hud {
       return;
     }
     if (p.x < W * 0.45 && !this.move) {
+      if (this.targeting) this.tapCand = { id: e.pointerId, pos: p, t: performance.now() };
       const R = this.stickR();
       const base = { x: clamp(p.x, R + 8 + this.safe.l, W * 0.45), y: clamp(p.y, R + 60, this.r.H - R - 8) };
       this.move = this.newStick(e, base, p);
@@ -328,6 +381,10 @@ export class Hud {
 
   private onMove = (e: PointerEvent) => {
     const p = this.pt(e);
+    if (this.aimPt && e.pointerId === this.aimPt.id) {
+      this.aimPt.pos = p;
+      return;
+    }
     if (this.move && e.pointerId === this.move.id) {
       this.move.pos = p;
       if (dist(p, this.move.base) > 6) this.move.moved = true;
@@ -350,6 +407,12 @@ export class Hud {
   };
 
   private onUp = (e: PointerEvent) => {
+    if (this.aimPt && e.pointerId === this.aimPt.id) {
+      const w = this.r.toWorldPt(this.aimPt.pos);
+      this.aimPt = null;
+      this.callArty(w);
+      return;
+    }
     const id = this.pressed.get(e.pointerId);
     if (id !== undefined) {
       this.pressed.delete(e.pointerId);
@@ -358,6 +421,9 @@ export class Hud {
     }
     if (this.move && e.pointerId === this.move.id) {
       this.move = null;
+      const tc = this.tapCand;
+      this.tapCand = null;
+      if (tc && tc.id === e.pointerId && this.targeting && performance.now() - tc.t < 300 && dist(this.pt(e), tc.pos) < 14) this.callArty(this.r.toWorldPt(tc.pos));
     } else if (this.fireStick && e.pointerId === this.fireStick.id) {
       const st = this.fireStick;
       this.fireStick = null;
@@ -425,6 +491,15 @@ export class Hud {
     audio.click();
   }
 
+  private callArty(w: V2) {
+    this.targeting = false;
+    this.aimPt = null;
+    const p = this.b.player;
+    if (!p || !p.alive || this.b.supportOf(p).arty <= 0) return;
+    this.controls.arty(w.x, w.y);
+    audio.click();
+  }
+
   private note(text: string, color = '#ffd27a') {
     if (this.notices[0]?.text === text && this.notices[0].t < 1) {
       this.notices[0].t = 0;
@@ -463,6 +538,12 @@ export class Hud {
       else if (p.crewCd > 0) this.note(`${tr('Crew carrier')} ${Math.ceil(p.crewCd)}s`, '#d8d0b8');
       else if (!p.needsCrew()) this.note(tr('No wounded crew'), '#c8c8c0');
       else this.controls.crew();
+    } else if (id === 'recon' && p) {
+      this.controls.recon();
+    } else if (id === 'arty' && p) {
+      this.targeting = !this.targeting;
+      this.aimPt = null;
+      if (this.targeting) this.note(tr('Tap the battlefield or the minimap to call artillery'), '#ffd27a');
     } else if (id === 'zin') this.r.zoomStep(1);
     else if (id === 'zout') {
       this.r.zoomStep(-1);
@@ -504,6 +585,8 @@ export class Hud {
       this.fireStick = null;
       this.smokeStick = null;
       this.brakeHeld = false;
+      this.targeting = false;
+      this.aimPt = null;
       if (this.sight) this.endSight();
       if (p) p.handbrake = false;
       return;
@@ -624,6 +707,7 @@ export class Hud {
   handle(ev: BattleEvent) {
     const b = this.b;
     if ('to' in ev && ev.to !== undefined && ev.to !== b.localKey) return;
+    if (ev.type === 'notice' && ev.team !== undefined && ev.team !== b.playerTeam) return;
     switch (ev.type) {
       case 'hit': {
         if (ev.shooter.isPlayer && ev.target.team !== ev.shooter.team) {
@@ -708,6 +792,7 @@ export class Hud {
       this.drawButtons(ctx, p);
       this.drawFireStick(ctx, p);
       if (this.sight) this.drawSightTouch(ctx);
+      if (this.targeting) this.drawTargeting(ctx, W);
     } else {
       for (const bt of this.buttons) this.drawTopBtn(ctx, bt);
     }
@@ -1004,6 +1089,12 @@ export class Hud {
       ctx.fillText(`👁 ${tr('SPOTTED')}`, x + w * 0.7, yy);
       yy += 13;
     }
+    if (p.streak > 0) {
+      ctx.fillStyle = '#ffb35c';
+      ctx.font = '700 10px "Barlow Condensed", sans-serif';
+      ctx.fillText(`${tr('STREAK')} ${p.streak}`, x + w * 0.7, yy);
+      yy += 13;
+    }
     if (this.hullDown) {
       ctx.fillStyle = '#a6e07c';
       ctx.font = '700 10px "Barlow Condensed", sans-serif';
@@ -1127,6 +1218,44 @@ export class Hud {
       ctx.beginPath();
       ctx.arc(sp.x, sp.y, 8 * z, 0, Math.PI * 2);
       ctx.fill();
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  private drawTargeting(ctx: Ctx, W: number) {
+    ctx.save();
+    // banner
+    ctx.font = '700 13px "Barlow Condensed", sans-serif';
+    ctx.textAlign = 'center';
+    const msg = tr('ARTILLERY: tap the battlefield or the minimap · ARTY again to cancel');
+    const tw = ctx.measureText(msg).width;
+    ctx.fillStyle = 'rgba(60,30,10,0.75)';
+    roundRect(ctx, W / 2 - tw / 2 - 12, this.safe.t + 48, tw + 24, 22, 5);
+    ctx.fill();
+    ctx.fillStyle = '#ffd27a';
+    ctx.fillText(msg, W / 2, this.safe.t + 59);
+    // minimap frame highlight
+    const mm = this.minimapRect();
+    ctx.strokeStyle = 'rgba(255,200,110,0.9)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(mm.x - 2, mm.y - 2, mm.size + 4, mm.size + 4);
+    if (this.aimPt) {
+      const R = ARTY.SPREAD * this.r.zoom;
+      const c = this.aimPt.pos;
+      ctx.setLineDash([6, 5]);
+      ctx.strokeStyle = 'rgba(255,120,80,0.95)';
+      ctx.fillStyle = 'rgba(255,90,60,0.12)';
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, R, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(c.x - 10, c.y);
+      ctx.lineTo(c.x + 10, c.y);
+      ctx.moveTo(c.x, c.y - 10);
+      ctx.lineTo(c.x, c.y + 10);
       ctx.stroke();
     }
     ctx.restore();
@@ -1529,6 +1658,10 @@ export class Hud {
           ctx.fill();
           ctx.restore();
         }
+      } else if (bt.id === 'recon') {
+        this.drawAbility(ctx, bt, tr('RECON'), { fill: 'rgba(40,70,110,0.8)', pulse: 'rgba(160,215,255,1)' });
+      } else if (bt.id === 'arty') {
+        this.drawAbility(ctx, bt, tr('ARTY'), { fill: this.targeting ? 'rgba(200,140,60,0.9)' : 'rgba(110,60,30,0.85)', active: this.targeting, pulse: this.targeting ? undefined : 'rgba(255,200,110,1)' });
       } else if (bt.id === 'crew') {
         const cv = this.b.carrierFor(p);
         if (cv && cv.state === 'park') {

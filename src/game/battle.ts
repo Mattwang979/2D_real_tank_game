@@ -4,16 +4,17 @@
 //   host    – authoritative multiplayer simulation; effects are mirrored to clients via `netOut`
 //   replica – client mirror of a host's battle; positions come from snapshots, effects from events
 
-import { type V2, DEG, angDiff, clamp, dist, fromAngle, satMTV, toWorld, dirToLocal } from '../core/math';
+import { type V2, DEG, angDiff, clamp, dist, fromAngle, pointInPoly, satMTV, toLocal, toWorld, dirToLocal } from '../core/math';
 import { rand } from '../core/rng';
 import { audio } from '../core/audio';
 import { VEHICLES, getVehicle, type ShellSpec, type VehicleSpec } from '../data/vehicles';
 import { AIController } from './ai';
-import { type ImpactResult, fireTick, intersectTank, resolveImpact } from './armor';
+import { type ImpactResult, fireTick, intersectTank, resolveImpact, topHit } from './armor';
 import { Effects } from './effects';
 import { type Building, type GameMap, type Tree, bermCrossing, buildMap, collideStatic, damageBuilding, losBlocked, MAPS, onBerm, setBuildingState, shellObstacleHit, structDamage, type Contact } from './map';
 import { CARRIER, type Carrier, carrierHit, driveCarrier } from './carrier';
 import { NavGrid } from './nav';
+import { ARTY, ARTY_EVERY, ARTY_SHELL, type ArtyStrike, RECON_EVERY, RECON_TIME, type ReconFlight, type SupportStock } from './support';
 import { Tank } from './tank';
 import { canSee, visibilityPolygon } from './vision';
 
@@ -42,7 +43,7 @@ export type BattleEvent =
   | { type: 'hit'; res: ImpactResult; shooter: Tank; target: Tank }
   | { type: 'popup'; text: string; x: number; y: number; color: string; big?: boolean; to?: string }
   | { type: 'feed'; killer: Tank | null; victim: Tank; how: string }
-  | { type: 'notice'; text: string; color?: string; to?: string }
+  | { type: 'notice'; text: string; color?: string; to?: string; team?: 0 | 1 }
   | { type: 'captured'; team: 0 | 1 }
   | { type: 'playerDead'; killer: Tank | null; res: ImpactResult | null; to?: string }
   | { type: 'end' };
@@ -57,6 +58,8 @@ export type NetFx =
   | { k: 'cloud'; id: number; x: number; y: number; rm: number; life: number; team: 0 | 1 }
   | { k: 'cdie'; id: number; x: number; y: number }
   | { k: 'bld'; id: number; st: number }
+  | { k: 'aimp'; x: number; y: number }
+  | { k: 'whis'; x: number; y: number }
   | { k: 'kill'; id: number; how: number; vx: number; vy: number; spin: number; vh: number; wf: number }
   | { k: 'tree'; id: number; dir: number }
   | { k: 'wall'; id: number }
@@ -93,6 +96,8 @@ export interface PlayerSlot {
   rewards: RewardLine[];
   lastHit: { res: ImpactResult; by: Tank } | null;
   connected: boolean;
+  /** killstreak support earned and not used yet (kept across respawns) */
+  support: SupportStock;
 }
 
 export interface BattleConfig {
@@ -167,6 +172,12 @@ export class Battle {
   private carrierId = 1;
   /** carriers each team can currently see */
   spottedCarriers: [Set<number>, Set<number>] = [new Set(), new Set()];
+  /** killstreak support in action */
+  recons: ReconFlight[] = [];
+  artys: ArtyStrike[] = [];
+  private supportId = 1;
+  /** set while artillery resolves, so its kills don't feed the streak */
+  private supportKill = false;
   private smokeId = 1;
   private projId = 1;
   battleBR: number;
@@ -185,7 +196,7 @@ export class Battle {
     // human slots
     const humans = cfg.slots ?? [{ key: 'local', name: cfg.playerName ?? 'Commander', lineup: cfg.lineup ?? ['m4a2'], team: (rand.chance(0.5) ? 0 : 1) as 0 | 1 }];
     for (const h of humans) {
-      this.slots.push({ key: h.key, name: h.name, team: h.team, lineup: h.lineup.length ? h.lineup : ['m4a2'], used: new Set(), tank: null, dead: false, deadAt: 0, stats: newStats(), rewards: [], lastHit: null, connected: true });
+      this.slots.push({ key: h.key, name: h.name, team: h.team, lineup: h.lineup.length ? h.lineup : ['m4a2'], used: new Set(), tank: null, dead: false, deadAt: 0, stats: newStats(), rewards: [], lastHit: null, connected: true, support: { recon: 0, arty: 0 } });
     }
     this.playerTeam = this.local?.team ?? 0;
 
@@ -368,6 +379,96 @@ export class Battle {
     this.carriers.push(c);
     if (t.slot) this.emit({ type: 'notice', text: 'Crew carrier on the way', color: '#9fd3ff', to: t.slot });
     return true;
+  }
+
+  /** Killstreak support stock of a tank (players: their slot, AI: the tank). */
+  supportOf(t: Tank): SupportStock {
+    return this.slotOf(t)?.support ?? t.support;
+  }
+
+  /** Recon plane: every enemy is revealed to our team while it circles overhead. */
+  useRecon(t: Tank): boolean {
+    const st = this.supportOf(t);
+    if (this.mode === 'replica' || !t.alive || st.recon <= 0) return false;
+    st.recon--;
+    const S = this.map.size;
+    const y = rand.range(S * 0.25, S * 0.75);
+    const fromLeft = this.map.spawns[t.team][0].x < S / 2;
+    const x0 = fromLeft ? -40 : S + 40;
+    const x1 = fromLeft ? S + 40 : -40;
+    this.recons.push({ id: this.supportId++, team: t.team, t: 0, T: RECON_TIME, x0, y0: y + rand.range(-40, 40), x1, y1: S - y + rand.range(-40, 40) });
+    this.emit({ type: 'notice', text: 'Recon plane overhead — enemies revealed', color: '#9fd3ff', team: t.team });
+    this.emit({ type: 'notice', text: 'Enemy recon plane!', color: '#ff8a5c', team: t.team === 0 ? 1 : 0 });
+    audio.plane(RECON_TIME, 0.1);
+    return true;
+  }
+
+  /** Artillery strike on a map point: a barrage of heavy HE arrives a few seconds later. */
+  useArty(t: Tank, x: number, y: number): boolean {
+    const st = this.supportOf(t);
+    if (this.mode === 'replica' || !t.alive || st.arty <= 0 || !Number.isFinite(x) || !Number.isFinite(y)) return false;
+    st.arty--;
+    const S = this.map.size;
+    const times: number[] = [];
+    for (let i = 0; i < ARTY.SHELLS; i++) times.push(ARTY.DELAY + (i / (ARTY.SHELLS - 1)) * ARTY.SPAN + rand.range(-0.12, 0.12));
+    times.sort((a, b) => a - b);
+    this.artys.push({ id: this.supportId++, team: t.team, by: t.id, x: clamp(x, 5, S - 5), y: clamp(y, 5, S - 5), t: 0, times, fired: 0, whistled: 0 });
+    this.emit({ type: 'notice', text: 'Artillery on the way', color: '#ffd27a', team: t.team });
+    this.emit({ type: 'notice', text: 'Enemy artillery incoming!', color: '#ff6b5a', team: t.team === 0 ? 1 : 0 });
+    return true;
+  }
+
+  private updateSupport(dt: number) {
+    for (const r of this.recons) r.t += dt;
+    this.recons = this.recons.filter((r) => r.t < r.T);
+    for (const a of this.artys) {
+      a.t += dt;
+      while (a.whistled < a.times.length && a.t >= a.times[a.whistled] - 1.1) {
+        a.whistled++;
+        audio.whistle(this.listenerDist(a));
+        this.netOut?.push({ k: 'whis', x: r2(a.x), y: r2(a.y) });
+      }
+      while (a.fired < a.times.length && a.t >= a.times[a.fired]) {
+        a.fired++;
+        const r = Math.sqrt(rand.next()) * ARTY.SPREAD;
+        const ang = rand.range(0, Math.PI * 2);
+        this.artyImpact(this.tanks.find((x) => x.id === a.by) ?? null, a.x + Math.cos(ang) * r, a.y + Math.sin(ang) * r);
+      }
+    }
+    this.artys = this.artys.filter((a) => a.fired < a.times.length || a.t < a.times[a.times.length - 1] + 0.5);
+  }
+
+  /** One heavy HE shell landing: crater, blast, direct hits on roofs, splash, buildings, carriers. */
+  private artyImpact(by: Tank | null, x: number, y: number) {
+    this.fxArty(x, y);
+    this.stampDecal('crater', x, y, 2.2, Math.floor(x * 17 + y * 3));
+    const at = { x, y };
+    const shooter = by ?? this.tanks[0];
+    const fake: Projectile = { id: -1, org: at, x, y, dx: 0, dy: 1, speed: 0, shell: ARTY_SHELL, shooter, dist: 0, age: 1, height: 0.5, penScale: 1, ignoreTank: -1, ignoreBarrel: -1, ricochet: false };
+    this.supportKill = true;
+    const direct = new Set<number>();
+    for (const t of this.tanks) {
+      if (!t.alive || dist(t.pos, at) > t.bp.radius + 0.3) continue;
+      if (!pointInPoly(toLocal(at, t.pos, t.ang), t.bp.hullPoly)) continue;
+      direct.add(t.id);
+      const res = topHit(by, t, at, ARTY_SHELL);
+      this.onImpact(fake, t, res, true);
+    }
+    this.splash(fake, x, y, direct);
+    this.supportKill = false;
+    for (const bld of this.map.buildings) {
+      if (bld.dmg >= 2 || Math.hypot(bld.cx - x, bld.cy - y) > Math.max(bld.w, bld.h) / 2 + 4) continue;
+      this.hitBuilding(bld, 160, by, x, y);
+    }
+    for (const c of this.carriers) if (c.state !== 'dead' && dist(c.pos, at) < 7) this.killCarrier(c);
+  }
+
+  fxArty(x: number, y: number) {
+    this.fx.heBlast(x, y, ARTY_SHELL.explosive);
+    this.fx.explosion(x, y, 0.55);
+    this.fx.impactDust(x, y, true);
+    audio.explosion(1.5, this.listenerDist({ x, y }));
+    this.netOut?.push({ k: 'aimp', x: r2(x), y: r2(y) });
   }
 
   private updateCarriers(dt: number) {
@@ -567,6 +668,7 @@ export class Battle {
     }
     this.updateSmoke(dt);
     this.updateCarriers(dt);
+    this.updateSupport(dt);
 
     // queued shots (fire button released while reloading / turret still traversing)
     for (const t of this.tanks) {
@@ -738,6 +840,12 @@ export class Battle {
         break;
       case 'cloud':
         if (!this.map.smokes.some((s) => s.id === e.id)) this.map.smokes.push({ id: e.id, x: e.x, y: e.y, r: 1.5, rMax: e.rm, age: 0, life: e.life, team: e.team });
+        break;
+      case 'aimp':
+        this.fxArty(e.x, e.y);
+        break;
+      case 'whis':
+        audio.whistle(this.listenerDist({ x: e.x, y: e.y }));
         break;
       case 'bld': {
         const bld = this.map.buildings.find((x) => x.id === e.id);
@@ -1067,13 +1175,13 @@ export class Battle {
   }
 
   /** HE shells exploding near (not on) a tank can still damage tracks / open-top crews. */
-  private splash(p: Projectile, x: number, y: number) {
+  private splash(p: Projectile, x: number, y: number, exclude?: Set<number>) {
     const r = 1.5 + Math.cbrt(p.shell.explosive) * 0.15;
     for (const c of this.carriers) {
       if (c.state !== 'dead' && dist(c.pos, { x, y }) < r + CARRIER.L * 0.35) this.killCarrier(c);
     }
     for (const t of this.tanks) {
-      if (!t.alive) continue;
+      if (!t.alive || exclude?.has(t.id)) continue;
       const d = dist(t.pos, { x, y }) - t.bp.radius * 0.7;
       if (d > r) continue;
       const dir = { x: t.pos.x - x, y: t.pos.y - y };
@@ -1124,6 +1232,7 @@ export class Battle {
 
     if (killer && killer.team !== target.team) {
       killer.kills++;
+      if (!this.supportKill) this.addStreak(killer);
       const ks = this.slotOf(killer);
       if (ks) {
         ks.stats.kills++;
@@ -1159,6 +1268,19 @@ export class Battle {
         this.reinforcements[target.team]--;
         this.respawnQueue.push({ team: target.team, at: this.time + 10 });
       }
+    }
+  }
+
+  private addStreak(t: Tank) {
+    t.streak++;
+    const st = this.supportOf(t);
+    if (t.streak % RECON_EVERY === 0 && st.recon < 1) {
+      st.recon = 1;
+      if (t.slot) this.emit({ type: 'notice', text: 'Recon plane ready', color: '#9fd3ff', to: t.slot });
+    }
+    if (t.streak % ARTY_EVERY === 0 && st.arty < 1) {
+      st.arty = 1;
+      if (t.slot) this.emit({ type: 'notice', text: 'Artillery strike ready', color: '#ffd27a', to: t.slot });
     }
   }
 
@@ -1223,15 +1345,22 @@ export class Battle {
 
   private updateSpotting(now: number) {
     for (const team of [0, 1] as const) {
+      const recon = this.recons.some((r) => r.team === team);
       const sc = this.spottedCarriers[team];
       sc.clear();
-      for (const c of this.carriers) if (c.team !== team && c.state !== 'dead' && this.teamSees(team, c.pos)) sc.add(c.id);
+      for (const c of this.carriers) if (c.team !== team && c.state !== 'dead' && (recon || this.teamSees(team, c.pos))) sc.add(c.id);
     }
     for (const team of [0, 1] as const) {
       const set = this.spotted[team];
       set.clear();
+      const recon = this.recons.some((r) => r.team === team);
       for (const e of this.tanks) {
         if (!e.alive || e.team === team) continue;
+        if (recon) {
+          set.add(e.id);
+          e.lastSeenPos = { ...e.pos };
+          continue;
+        }
         for (const v of this.tanks) {
           if (!v.alive || v.team !== team) continue;
           if (canSee(this.map, v, e, now)) {
@@ -1447,6 +1576,8 @@ export class Battle {
       }
       if (c.state === 'park' || c.state === 'dead') c.t += dt;
     }
+    for (const r of this.recons) r.t += dt;
+    for (const a of this.artys) a.t += dt;
     this.trackMarks(dt);
     this.updateSmoke(dt);
     this.updateFires(dt);

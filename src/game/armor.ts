@@ -555,6 +555,65 @@ export function resolveImpact(shooter: Tank | null, target: Tank, shell: ShellSp
   return base;
 }
 
+/**
+ * A heavy shell landing on top of a vehicle (artillery): the thin roof gives way and the
+ * blast and fragments sweep the inside.
+ */
+export function topHit(shooter: Tank | null, target: Tank, at: V2, shell: ShellSpec): ImpactResult {
+  const prevStates = snapshotStates(target);
+  const entry = toLocal(at, target.pos, target.ang);
+  const res: ImpactResult = {
+    outcome: 'pen',
+    partLabel: 'Roof',
+    armor: Math.round(Math.max(12, target.spec.armor.rear.t * 0.5)),
+    angle: 0,
+    eff: Math.round(Math.max(12, target.spec.armor.rear.t * 0.5)),
+    pen: Math.round(shell.pen[0]),
+    entry,
+    dir: { x: entry.x >= 0 ? -1 : 1, y: 0 },
+    world: { ...at },
+    segs: [],
+    states: prevStates,
+    prevStates,
+    changed: [],
+    messages: ['Direct artillery hit'],
+    fire: false,
+    cookoff: false,
+    killed: false,
+    turretRel: target.turretRel,
+    gunRel: target.gunRel,
+    damage: 0,
+  };
+  if (!target.alive) {
+    res.outcome = 'wreck';
+    return res;
+  }
+  const acc = new Map<number, number>();
+  const cbrtE = Math.cbrt(Math.max(1, shell.explosive));
+  const r = 1.1 + cbrtE * 0.11;
+  blastDamage(target, entry, r, 55 + cbrtE * 8, acc);
+  res.blast = { c: entry, r };
+  const n = 28;
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 + rand.range(-0.1, 0.1);
+    const d = { x: Math.cos(a), y: Math.sin(a) };
+    const l = rand.range(1.0, 2.6);
+    castDamage(target, entry, d, l, 26 + cbrtE * 1.4, acc);
+    res.segs.push({ a: entry, b: { x: entry.x + d.x * l, y: entry.y + d.y * l }, kind: 'blast' });
+  }
+  // running gear under the blast
+  for (let i = 0; i < target.mods.length; i++) {
+    const m = target.mods[i];
+    if (m.def.kind !== 'track' || m.def.shape.t !== 'rect') continue;
+    const sh = m.def.shape;
+    const cx = clamp(entry.x, sh.x0, sh.x1);
+    const cy = clamp(entry.y, sh.y0, sh.y1);
+    if (Math.hypot(cx - entry.x, cy - entry.y) < 1.8) acc.set(i, (acc.get(i) ?? 0) + 40 + cbrtE * 3);
+  }
+  applyDamage(shooter, target, acc, res);
+  return res;
+}
+
 function applyDamage(shooter: Tank | null, target: Tank, acc: Map<number, number>, res: ImpactResult) {
   let total = 0;
   const msgs = res.messages;

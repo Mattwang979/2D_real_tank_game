@@ -51,6 +51,10 @@ export class Tank {
   crewCd = 0;
   /** ground speed factor (earthworks are slow going) */
   terrainMul = 1;
+  /** kills in this life (killstreak) */
+  streak = 0;
+  /** killstreak support held by an AI tank (players keep theirs in the slot) */
+  support = { recon: 0, arty: 0 };
   /** request from controls: launch smoke toward this world angle */
   wantSmoke: number | null = null;
   /** queued shot: fires as soon as the gun is loaded and on the aim angle (until `until`) */

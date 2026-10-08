@@ -8,6 +8,7 @@ import type { ImpactResult } from '../game/armor';
 import { Battle, type BattleEvent, type NetFx, type PlayerSlot } from '../game/battle';
 import { MAPS } from '../game/map';
 import { Tank } from '../game/tank';
+import { audio } from '../core/audio';
 import { VEHICLES, getVehicle } from '../data/vehicles';
 import type { Controls } from '../ui/hud';
 import { connectTo, type DataConnection, makeCode, NetError, openPeer, type Peer, PROTOCOL, ROOM_PREFIX } from './peer';
@@ -290,6 +291,8 @@ class HostGame implements NetSession {
         else if (m.a === 'boost') b.useBoost(t);
         else if (m.a === 'repair') b.useRepair(t);
         else if (m.a === 'crew') b.useCrew(t);
+        else if (m.a === 'recon') b.useRecon(t);
+        else if (m.a === 'arty') b.useArty(t, Number(m.x), Number(m.y));
         break;
       }
       case 'ping':
@@ -352,7 +355,9 @@ class HostGame implements NetSession {
         case 'notice': {
           const ne: NetEvent = { e: 'note', tx: ev.text, c: ev.color };
           if (ev.to) this.queue(ev.to, ne);
-          else this.broadcast(ne);
+          else if (ev.team !== undefined) {
+            for (const s of b.slots) if (s.team === ev.team) this.queue(s.key, ne);
+          } else this.broadcast(ne);
           break;
         }
         case 'captured':
@@ -426,6 +431,8 @@ class HostGame implements NetSession {
     return {
       cv,
       csp: [[...b.spottedCarriers[0]], [...b.spottedCarriers[1]]],
+      rc: b.recons.map((r) => [r.id, r.team, r2(r.x0), r2(r.y0), r2(r.x1), r2(r.y1), r2(r.t), r.T]),
+      ar: b.artys.map((a) => [a.id, a.team, r2(a.x), r2(a.y), r2(a.t), ...a.times.map(r2)]),
       tm: r2(b.time),
       tk: [r2(b.tickets[0]), r2(b.tickets[1])],
       rf: [b.reinforcements[0], b.reinforcements[1]],
@@ -461,6 +468,8 @@ class HostGame implements NetSession {
       me.fq = t.fireReq ? 1 : 0;
       me.cc = r2(t.crewCd);
     }
+    // players keep their support in the slot
+    me.su = [s.support.recon, s.support.arty, t ? t.streak : 0];
     const n = this.rwSent.get(key) ?? 0;
     if (s.rewards.length > n) {
       me.rw = s.rewards.slice(n);
@@ -639,6 +648,7 @@ export class ClientGame implements NetSession {
   private pingT = 0;
   private fireSentAt = 0;
   private lastMsg = performance.now();
+  private planes = new Set<number>();
   gone = false;
 
   constructor(room: ClientRoom, b: Battle) {
@@ -665,6 +675,8 @@ export class ClientGame implements NetSession {
       boost: () => act({ t: 'act', a: 'boost' }),
       repair: () => act({ t: 'act', a: 'repair' }),
       crew: () => act({ t: 'act', a: 'crew' }),
+      recon: () => act({ t: 'act', a: 'recon' }),
+      arty: (x, y) => act({ t: 'act', a: 'arty', x: r2(x), y: r2(y) }),
       respawn: (id) => act({ t: 'act', a: 'spawn', id }),
     };
   }
@@ -804,6 +816,17 @@ export class ClientGame implements NetSession {
         if (!me.fq && t.fireReq && performance.now() - this.fireSentAt > this.rtt + 150) t.fireReq = null;
         t.crewCd = me.cc ?? 0;
       }
+    }
+    if (me.su) {
+      slot.support.recon = me.su[0];
+      slot.support.arty = me.su[1];
+      if (slot.tank) slot.tank.streak = me.su[2];
+    }
+    b.recons = (s.rc ?? []).map((r) => ({ id: r[0], team: r[1] as 0 | 1, x0: r[2], y0: r[3], x1: r[4], y1: r[5], t: r[6] + lat, T: r[7] }));
+    b.artys = (s.ar ?? []).map((a) => ({ id: a[0], team: a[1] as 0 | 1, by: -1, x: a[2], y: a[3], t: a[4] + lat, times: a.slice(5), fired: 0, whistled: 0 }));
+    for (const r of b.recons) if (!this.planes.has(r.id)) {
+      this.planes.add(r.id);
+      audio.plane(Math.max(1, r.T - r.t), 0.1);
     }
     if (me.rw) slot.rewards.push(...me.rw);
     if (me.st) slot.stats = me.st;

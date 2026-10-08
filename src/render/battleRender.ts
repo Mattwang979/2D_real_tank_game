@@ -5,6 +5,7 @@ import { plateMap, predictShot, type Prediction } from '../game/armor';
 import type { Battle } from '../game/battle';
 import { bermCover, shellObstacleHit } from '../game/map';
 import type { Tank } from '../game/tank';
+import { ARTY, reconPos } from '../game/support';
 import { drawCarrier, drawCrewWalk } from './carrierRender';
 import { MapRenderer } from './mapRender';
 import { blitPart, getBurnt, getTankSprites, makeCanvas } from './tankRender';
@@ -215,6 +216,7 @@ export class BattleRenderer {
     b.fx.draw(ctx, true, x0, y0, x1, y1);
     this.drawGrenades(ctx);
     b.fx.drawSmokeClouds(ctx, b.map.smokes, x0, y0, x1, y1);
+    for (const rc of b.recons) this.drawPlane(ctx, rc.team, reconPos(rc));
 
     // fog of war outside the player's vision polygon
     if (b.player && b.player.alive && b.visionPoly.length > 2) this.drawFog(ctx);
@@ -380,6 +382,50 @@ export class BattleRenderer {
       ctx.arc(p.x, p.y, 0.16 + p.shell.caliber / 1200, 0, Math.PI * 2);
       ctx.fill();
     }
+    ctx.restore();
+  }
+
+  /** Recon aircraft high overhead, with its shadow far off on the ground. */
+  private drawPlane(ctx: Ctx, team: 0 | 1, p: { x: number; y: number; ang: number }) {
+    const sh = this.b.map.shadow;
+    const alt = 22;
+    const shape = (fill: string, wing: string) => {
+      ctx.fillStyle = wing;
+      ctx.beginPath();
+      ctx.roundRect(-1.0, -7.2, 2.2, 14.4, 0.8); // high wing
+      ctx.fill();
+      ctx.beginPath();
+      ctx.roundRect(-5.4, -2.6, 1.3, 5.2, 0.5); // tailplane
+      ctx.fill();
+      ctx.fillStyle = fill;
+      ctx.beginPath();
+      ctx.ellipse(-0.4, 0, 5.2, 0.75, 0, 0, Math.PI * 2); // fuselage
+      ctx.fill();
+    };
+    ctx.save();
+    ctx.translate(p.x + sh.x * alt, p.y + sh.y * alt);
+    ctx.rotate(p.ang);
+    ctx.globalAlpha = 0.28;
+    shape('#000', '#000');
+    ctx.restore();
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.ang);
+    ctx.scale(1.15, 1.15);
+    shape('#6f7458', '#8a8f6e');
+    // roundels in the team colour
+    ctx.fillStyle = team === this.b.playerTeam ? TEAM_COL.friend : TEAM_COL.enemy;
+    for (const y of [-5.2, 5.2]) {
+      ctx.beginPath();
+      ctx.arc(0.1, y, 0.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // spinning propeller
+    ctx.strokeStyle = 'rgba(30,30,30,0.5)';
+    ctx.lineWidth = 0.25;
+    ctx.beginPath();
+    ctx.ellipse(4.9, 0, 0.15, 1.3, 0, 0, Math.PI * 2);
+    ctx.stroke();
     ctx.restore();
   }
 
@@ -560,6 +606,34 @@ export class BattleRenderer {
         ctx.fillStyle = friend ? 'rgba(190,215,255,0.9)' : 'rgba(255,190,180,0.85)';
         ctx.fillText(label, t.pos.x, y - 1.3 * mk);
       }
+    }
+
+    // incoming artillery: everyone sees the impact zone
+    for (const a of b.artys) {
+      const first = a.times[0] - a.t;
+      const last = a.times[a.times.length - 1] - a.t;
+      if (last < -0.3) continue;
+      const pulse = 0.5 + 0.5 * Math.sin(this.b.time * 9);
+      const R = ARTY.SPREAD + 1.5;
+      ctx.fillStyle = `rgba(255,70,40,${0.06 + pulse * 0.08})`;
+      ctx.strokeStyle = 'rgba(255,90,60,0.9)';
+      ctx.lineWidth = 0.35 * mk;
+      ctx.setLineDash([1.6 * mk, 1.1 * mk]);
+      ctx.beginPath();
+      ctx.arc(a.x, a.y, R, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(a.x - 1.5, a.y);
+      ctx.lineTo(a.x + 1.5, a.y);
+      ctx.moveTo(a.x, a.y - 1.5);
+      ctx.lineTo(a.x, a.y + 1.5);
+      ctx.stroke();
+      ctx.font = `700 ${1.8 * mk}px "Barlow Condensed", sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.fillStyle = 'rgba(255,170,150,0.95)';
+      ctx.fillText(first > 0 ? `ARTILLERY ${first.toFixed(1)}s` : 'ARTILLERY', a.x, a.y - R - 1.2 * mk);
     }
 
     // carrier markers

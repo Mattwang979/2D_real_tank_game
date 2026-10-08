@@ -216,6 +216,13 @@ export class AIController {
         this.repairAt = -1;
       }
     } else this.repairAt = -1;
+    // killstreak support
+    const sup = b.supportOf(t);
+    if (sup.recon > 0 && !this.target && rand.chance(dt * 0.25)) b.useRecon(t);
+    if (sup.arty > 0 && rand.chance(dt * 0.5)) {
+      const aim = this.artyAim();
+      if (aim) b.useArty(t, aim.x, aim.y);
+    }
     // call a crew carrier when crew are down and the fight is not right on top of us
     if (t.crewCd <= 0 && t.needsCrewBadly() && !b.carrierFor(t) && rand.chance(dt * 0.6)) {
       if (!this.target || dist(t.pos, this.target.pos) > 140) b.useCrew(t);
@@ -367,6 +374,25 @@ export class AIController {
         this.reverseSteer = rand.chance(0.5) ? 1 : -1;
       }
     } else this.stuck = Math.max(0, this.stuck - dt);
+  }
+
+  /** Where to drop artillery: on a slow or bunched-up spotted enemy, well clear of our own tanks. */
+  private artyAim(): V2 | null {
+    const b = this.b;
+    const t = this.tank;
+    let best: V2 | null = null;
+    let bestScore = 0;
+    for (const e of b.tanks) {
+      if (!e.alive || e.team === t.team || !b.isSpotted(t.team, e)) continue;
+      let score = 1 + (Math.abs(e.speed) < 1 ? 1.2 : 0);
+      for (const o of b.tanks) if (o !== e && o.alive && o.team !== t.team && dist(o.pos, e.pos) < 18) score += 1;
+      if (b.tanks.some((o) => o.alive && o.team === t.team && dist(o.pos, e.pos) < 22)) continue;
+      if (score > bestScore) {
+        bestScore = score;
+        best = { x: e.pos.x + rand.range(-4, 4), y: e.pos.y + rand.range(-4, 4) };
+      }
+    }
+    return bestScore >= 2 ? best : null;
   }
 
   private carrierTarget(tp: V2): Carrier | null {
