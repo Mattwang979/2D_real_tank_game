@@ -89,9 +89,15 @@ await touch('touchEnd', []);
 await page.waitForTimeout(200);
 check('arty button enters targeting', await ev(() => window.__pen.hud.targeting));
 const sp = await ev((w) => window.__pen.renderer.toScreen(w), target.world);
+const driveSide = await ev((x) => x < window.__pen.renderer.W * 0.45, sp.x);
 await touch('touchStart', [[sp.x, sp.y, 5]]);
-await page.waitForTimeout(150);
-await page.screenshot({ path: `${out}/sp_target.png` });
+if (driveSide) {
+  // on the drive-stick side only a quick tap picks the target (a hold is driving)
+  await page.waitForTimeout(60);
+} else {
+  await page.waitForTimeout(150);
+  await page.screenshot({ path: `${out}/sp_target.png` });
+}
 await touch('touchEnd', []);
 await page.waitForTimeout(400);
 st = await ev(() => ({ artys: window.__pen.battle.artys.length, targeting: window.__pen.hud.targeting }));

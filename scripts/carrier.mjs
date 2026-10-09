@@ -82,7 +82,12 @@ await ev(() => {
   const b = window.__pen.battle;
   const c = b.carriers[0];
   const e = b.tanks.find((t) => t.team !== b.player.team);
-  e.pos = { x: c.pos.x + 40, y: c.pos.y - 25 };
+  // on the far side of the carrier from our tank, so our own hull is never in the line of fire
+  const p = b.player;
+  const dx = c.pos.x - p.pos.x;
+  const dy = c.pos.y - p.pos.y;
+  const dl = Math.hypot(dx, dy) || 1;
+  e.pos = { x: c.pos.x + (dx / dl) * 40 - (dy / dl) * 12, y: c.pos.y + (dy / dl) * 40 + (dx / dl) * 12 };
   e.aimAngle = Math.atan2(c.pos.y - e.pos.y, c.pos.x - e.pos.x);
   e.turretRel = e.aimAngle - e.ang;
   e.gunRel = 0;
