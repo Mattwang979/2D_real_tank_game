@@ -124,6 +124,8 @@ export interface BattleHooks {
   fellTree?: (t: Tree, dir: number) => void;
   /** a building's damage state changed (redraw it) */
   building?: (b: Building) => void;
+  /** something blew up at (x, y); `power` ≈ 0.3 (small HE shell) … 1.5 (ammo cook-off) — vibration */
+  blast?: (x: number, y: number, power: number) => void;
 }
 
 const AI_NAMES = ['Anvil', 'Badger', 'Cobalt', 'Drake', 'Ember', 'Falcon', 'Granite', 'Hammer', 'Iron', 'Jackal', 'Kodiak', 'Lynx', 'Mason', 'Nomad', 'Onyx', 'Pike', 'Quarry', 'Raven', 'Sable', 'Talon', 'Ursa', 'Viper', 'Wolf', 'Yukon', 'Zephyr', 'Bishop', 'Cutter', 'Dusty', 'Flint', 'Gunner'];
@@ -575,6 +577,7 @@ export class Battle {
     this.fx.explosion(x, y, 0.55);
     this.fx.impactDust(x, y, true);
     audio.explosion(1.5, this.listenerDist({ x, y }));
+    this.hooks.blast?.(x, y, 1.2);
     this.netOut?.push({ k: 'aimp', x: r2(x), y: r2(y) });
   }
 
@@ -657,6 +660,7 @@ export class Battle {
   fxCarrierDeath(c: Carrier) {
     this.fx.explosion(c.pos.x, c.pos.y, 0.75);
     audio.explosion(0.9, this.listenerDist(c.pos));
+    this.hooks.blast?.(c.pos.x, c.pos.y, 0.9);
     this.stampDecal('scorch', c.pos.x, c.pos.y, 3.2);
     this.netOut?.push({ k: 'cdie', id: c.id, x: r2(c.pos.x), y: r2(c.pos.y) });
   }
@@ -877,6 +881,7 @@ export class Battle {
     if (explosive > 0 && !splash) {
       this.fx.heBlast(x, y, explosive);
       audio.explosion(Math.cbrt(explosive) / 12, ld);
+      this.hooks.blast?.(x, y, Math.cbrt(explosive) / 12);
     }
     this.netOut?.push({ k: 'imp', x: r2(x), y: r2(y), o: OUTCOMES.indexOf(outcome), dx: r3(dx), dy: r3(dy), c: caliber, e: explosive, rx: reflect ? r3(reflect.x) : undefined, ry: reflect ? r3(reflect.y) : undefined, sp: splash ? 1 : undefined, pid, end: end ? 1 : 0 });
   }
@@ -886,6 +891,7 @@ export class Battle {
     if (explosive > 0) {
       this.fx.heBlast(x, y, explosive);
       audio.explosion(Math.cbrt(explosive) / 10, ld);
+      this.hooks.blast?.(x, y, Math.cbrt(explosive) / 10);
     } else {
       // earth swallows the shell in a spray of dirt; stone and steel throw sparks
       this.fx.impactDust(x, y, soft || caliber > 80);
@@ -904,6 +910,7 @@ export class Battle {
       t.cookedOff = true;
       this.fx.explosion(tp.x, tp.y, 1.4);
       audio.explosion(1.5, ld);
+      this.hooks.blast?.(tp.x, tp.y, 1.5);
       const a = rand.range(0, Math.PI * 2);
       const v = turretVel ?? { vx: Math.cos(a) * rand.range(2, 7), vy: Math.sin(a) * rand.range(2, 7), spin: rand.range(-4, 4), vh: rand.range(7, 12) };
       t.turretOff = { pos: { ...tp }, ang: t.turretWorldAng, vel: { x: v.vx, y: v.vy }, spin: v.spin, h: 0, vh: v.vh };
@@ -912,6 +919,7 @@ export class Battle {
     } else {
       this.fx.explosion(tp.x, tp.y, 0.6);
       audio.explosion(0.8, ld);
+      this.hooks.blast?.(tp.x, tp.y, 0.8);
       t.wreckFire = wreckFire ?? (t.burning > 0 ? rand.range(8, 14) : rand.range(2, 5));
       this.netOut?.push({ k: 'kill', id: t.id, how: how === 'crew' ? 1 : 2, vx: 0, vy: 0, spin: 0, vh: 0, wf: r2(t.wreckFire) });
     }
@@ -988,6 +996,7 @@ export class Battle {
         }
         this.fx.explosion(e.x, e.y, 0.75);
         audio.explosion(0.9, this.listenerDist({ x: e.x, y: e.y }));
+        this.hooks.blast?.(e.x, e.y, 0.9);
         break;
       }
       case 'kill': {

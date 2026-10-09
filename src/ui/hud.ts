@@ -8,6 +8,7 @@
 
 import { type V2, DEG, angDiff, clamp, dist, formatNum } from '../core/math';
 import { audio } from '../core/audio';
+import { haptics } from '../core/haptics';
 import type { Battle, BattleEvent } from '../game/battle';
 import { BATTLE_TIME, TICKETS } from '../game/battle';
 import { CARRIER } from '../game/carrier';
@@ -22,6 +23,7 @@ import { TEAM_COL, predColor, type BattleRenderer } from '../render/battleRender
 import { drawXray, drawTankSprite, makeCanvas } from '../render/tankRender';
 import { t as tr } from './i18n';
 import { drawHitCam, hitTitle, roundRect, type HitCamEntry } from './hitcam';
+import type { KillCam } from '../render/killcam';
 
 type Ctx = CanvasRenderingContext2D;
 
@@ -192,6 +194,8 @@ export class Hud {
   pings: Ping[] = [];
   /** speech bubbles over tanks that just used the radio */
   private bubbles = new Map<number, { text: string; t: number }>();
+  /** kill replay shown after we are knocked out (null when turned off) */
+  killcam: KillCam | null = null;
 
   constructor(b: Battle, r: BattleRenderer, canvas: HTMLCanvasElement, controls?: Controls) {
     this.b = b;
@@ -203,7 +207,26 @@ export class Hud {
     canvas.addEventListener('pointerup', this.onUp);
     canvas.addEventListener('pointercancel', this.onUp);
     this.readSafe();
+    b.hooks.blast = this.onBlast;
   }
+
+  /** Show a replay of the kill before the death screen. */
+  attachKillcam(kc: KillCam) {
+    this.killcam = kc;
+    kc.onEnd = () => {
+      // the death screen fades in once the replay is over
+      if (this.deathInfo) this.deathInfo.t = 0;
+    };
+  }
+
+  /** Something blew up: shake the phone when it was close to our tank. */
+  private onBlast = (x: number, y: number, power: number) => {
+    const p = this.b.player;
+    if (!p || !p.alive) return;
+    const reach = 14 + 22 * power;
+    const d = Math.hypot(p.pos.x - x, p.pos.y - y);
+    if (d < reach) haptics.blast(power * (1 - d / reach));
+  };
 
   destroy() {
     this.canvas.removeEventListener('pointerdown', this.onDown);
@@ -211,6 +234,8 @@ export class Hud {
     this.canvas.removeEventListener('pointerup', this.onUp);
     this.canvas.removeEventListener('pointercancel', this.onUp);
     this.r.camLock = null;
+    if (this.b.hooks.blast === this.onBlast) this.b.hooks.blast = undefined;
+    this.killcam?.stop(false);
   }
 
   readSafe() {
@@ -224,6 +249,13 @@ export class Hud {
     const W = this.r.W;
     const H = this.r.H;
     const s = this.safe;
+    if (this.killcam?.active) {
+      this.buttons = [
+        { id: 'skip', x: W - s.r - 118, y: H - s.b - 38, w: 104, h: 30 },
+        { id: 'pause', x: W - s.r - 30, y: s.t + 26, r: 18 },
+      ];
+      return;
+    }
     const fr = clamp(H * 0.13, 40, 54);
     const fx = W - s.r - fr - 20;
     const fy = H - s.b - fr - 18;
@@ -527,6 +559,7 @@ export class Hud {
       return;
     }
     this.controls.fire(aim);
+    haptics.fireTap();
     // network client: show the queued state until the host's shot arrives
     if (this.b.mode === 'replica' && !p.fireReq) p.fireReq = { until: this.b.time + p.reloadLeft + 3 };
   }
@@ -544,6 +577,7 @@ export class Hud {
     const a = st.moved ? this.settledAngle(st) : p.gunWorldAng;
     this.controls.smoke(a);
     audio.click();
+    haptics.tick();
   }
 
   private releaseFlare(st: Stick) {
@@ -557,6 +591,7 @@ export class Hud {
     if (!p.canFlare()) return;
     this.controls.flare(st.moved ? this.settledAngle(st) : p.gunWorldAng);
     audio.click();
+    haptics.tick();
   }
 
   /** Send a radio command; pings that point at something use the gun sight (or `at`). */
@@ -594,6 +629,11 @@ export class Hud {
     const b = this.b;
     const p = b.player;
     audio.click();
+    if (id === 'skip') {
+      this.killcam?.stop();
+      return;
+    }
+    if (id === 'boost' || id === 'repair' || id === 'crew' || id === 'recon' || id === 'arty' || id === 'radio' || id.startsWith('ammo') || id.startsWith('spawn:')) haptics.tick();
     if (id.startsWith('ammo') && p) this.controls.shell(parseInt(id.slice(4), 10));
     else if (id === 'brake') this.brakeHeld = true;
     else if (id === 'boost' && p) {
@@ -674,7 +714,7 @@ export class Hud {
     this.incoming = this.incoming.filter((i) => i.t < 2.2);
     this.hitcams = this.hitcams.filter((h) => h.t < h.life);
     this.fireFlash = Math.max(0, this.fireFlash - dt);
-    if (this.deathInfo) this.deathInfo.t += dt;
+    if (this.deathInfo && !this.killcam?.pending && !this.killcam?.active) this.deathInfo.t += dt;
     if (this.tutorial > 0 && b.time > 4.6) this.tutorial -= dt;
 
     if (!p || !p.alive || b.state !== 'playing') {
@@ -711,6 +751,7 @@ export class Hud {
     if (p.recoil > this.prevRecoil + 0.3) {
       this.fireFlash = 0.15;
       this.r.shake = Math.min(1, 0.4 + p.spec.gun.caliber / 200);
+      haptics.fire(p.spec.gun.caliber);
     }
     this.prevRecoil = p.recoil;
 
@@ -816,6 +857,10 @@ export class Hud {
           if (label) this.r.addPopup(label, ev.res.world.x, ev.res.world.y, ev.res.outcome === 'ricochet' ? '#f2c94c' : '#c8c8c0', false);
         }
         if (ev.target.isPlayer && ev.res.damage > 0) this.r.shake = Math.min(1.2, this.r.shake + 0.6);
+        if (ev.target.isPlayer && ev.target.alive) {
+          if (ev.res.outcome === 'pen' || ev.res.damage > 0) haptics.penetrated(ev.res.damage / 200 + (ev.res.fire ? 0.3 : 0));
+          else if (ev.res.outcome === 'ricochet' || ev.res.outcome === 'nonpen') haptics.glance();
+        } else if (ev.shooter.isPlayer && ev.target.team !== ev.shooter.team && ev.res.outcome === 'pen') haptics.pulse(14, 0, 'hit');
         if (ev.target.isPlayer && ev.shooter !== ev.target) {
           const tp = ev.target.pos;
           this.incoming.push({ ang: Math.atan2(ev.shooter.pos.y - tp.y, ev.shooter.pos.x - tp.x), t: 0, pen: ev.res.outcome === 'pen' });
@@ -834,6 +879,7 @@ export class Hud {
         const text = k ? `${kn}${icon}${nm(ev.victim)}` : `${nm(ev.victim)} ✸`;
         this.feed.unshift({ text, killerFriend: k ? k.team === b.playerTeam : ev.victim.team !== b.playerTeam, t: 0 });
         this.feed = this.feed.slice(0, 5);
+        if (k && k.isPlayer && ev.victim.team !== k.team) haptics.kill();
         break;
       }
       case 'notice':
@@ -863,11 +909,13 @@ export class Hud {
       case 'playerDead': {
         let entry: HitCamEntry | null = null;
         if (ev.res && b.player) {
-          const title = ev.res.cookoff ? 'COOK-OFF' : tr('KNOCKED OUT');
+          const title = ev.res.cookoff ? tr('COOK-OFF') : tr('KNOCKED OUT');
           const color = '#e8473b';
           entry = { res: ev.res, target: b.player, shooter: ev.killer ?? b.player, t: 1.0, life: 9999, title, color };
         }
         this.deathInfo = { killer: ev.killer, res: entry, t: 0 };
+        haptics.destroyed();
+        if (this.killcam && b.player && ev.killer && ev.killer !== b.player) this.killcam.schedule(ev.killer, b.player);
         break;
       }
     }
@@ -884,6 +932,12 @@ export class Hud {
     ctx.setTransform(r.dpr, 0, 0, r.dpr, 0, 0);
     ctx.textBaseline = 'middle';
     this.layout();
+    if (this.killcam?.active) {
+      this.drawKillcam(ctx, W, H, s);
+      this.drawNetInfo(ctx, W, H, s, true);
+      ctx.restore();
+      return;
+    }
 
     this.drawScore(ctx, W, s);
     this.drawMinimap(ctx, s);
@@ -916,28 +970,8 @@ export class Hud {
     } else {
       for (const bt of this.buttons) this.drawTopBtn(ctx, bt);
     }
-    if (this.netInfo) {
-      const size = clamp(H * 0.3, 96, 128);
-      ctx.save();
-      ctx.textAlign = 'left';
-      if (this.netInfo.startsWith('⚠')) {
-        // connection trouble: make it obvious
-        const msg = tr(this.netInfo.slice(2));
-        ctx.font = '700 15px "Barlow Condensed", sans-serif';
-        ctx.textAlign = 'center';
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = 'rgba(0,0,0,0.7)';
-        ctx.strokeText(`⚠ ${msg}`, W / 2, H * 0.62);
-        ctx.fillStyle = '#ff8a5c';
-        ctx.fillText(`⚠ ${msg}`, W / 2, H * 0.62);
-      } else {
-        ctx.font = '600 10px "Barlow Condensed", sans-serif';
-        ctx.fillStyle = 'rgba(220,225,215,0.75)';
-        ctx.fillText(this.netInfo, s.l + 12, s.t + 10 + size + 10 + clamp(H * 0.25, 78, 104) + 14);
-      }
-      ctx.restore();
-    }
-    if (b.state === 'dead') this.drawDeath(ctx, W, H, s);
+    this.drawNetInfo(ctx, W, H, s, false);
+    if (b.state === 'dead' && !this.killcam?.pending) this.drawDeath(ctx, W, H, s);
     if (b.time < 4.5 && b.state === 'playing') {
       const w = b.weather;
       const sub2 = w.id === 'clear' ? undefined : `${w.icon} ${tr(w.name)} · ${tr(w.info)}`;
@@ -2070,6 +2104,172 @@ export class Hud {
     const fc = this.fireC;
     box(fc.x - fc.r * 3.2, this.arcTop - 34, tr('DRAG THE FIRE BUTTON TO AIM'), tr('Release to fire · slide back to the centre to cancel'));
     box(fc.x - fc.r * 3.2, this.arcTop - 86, tr('BRAKE: hold to drift · SMOKE: drag to throw'), tr('+ / − zoom · zoomed in, touch the battlefield to aim precisely'));
+    ctx.restore();
+  }
+
+  /** Multiplayer line (ping), or a loud warning when the connection is in trouble. */
+  private drawNetInfo(ctx: Ctx, W: number, H: number, s: typeof this.safe, warnOnly: boolean) {
+    if (!this.netInfo) return;
+    const warn = this.netInfo.startsWith('⚠');
+    if (warnOnly && !warn) return;
+    const size = clamp(H * 0.3, 96, 128);
+    ctx.save();
+    ctx.textAlign = 'left';
+    if (warn) {
+      // connection trouble: make it obvious
+      const msg = tr(this.netInfo.slice(2));
+      ctx.font = '700 15px "Barlow Condensed", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+      ctx.strokeText(`⚠ ${msg}`, W / 2, H * 0.62);
+      ctx.fillStyle = '#ff8a5c';
+      ctx.fillText(`⚠ ${msg}`, W / 2, H * 0.62);
+    } else {
+      ctx.font = '600 10px "Barlow Condensed", sans-serif';
+      ctx.fillStyle = 'rgba(220,225,215,0.75)';
+      ctx.fillText(this.netInfo, s.l + 12, s.t + 10 + size + 10 + clamp(H * 0.25, 78, 104) + 14);
+    }
+    ctx.restore();
+  }
+
+  /** Kill replay overlay: letterbox, who did it, slow motion, the knock-out stamp, progress and SKIP. */
+  private drawKillcam(ctx: Ctx, W: number, H: number, s: typeof this.safe) {
+    const kc = this.killcam!;
+    const top = s.t + clamp(H * 0.1, 30, 46);
+    const bot = s.b + clamp(H * 0.1, 30, 46);
+    ctx.save();
+    // fade in from the live view
+    const a = Math.min(1, kc.elapsed / 0.35);
+    ctx.globalAlpha = a;
+    ctx.fillStyle = 'rgba(0,0,0,0.84)';
+    ctx.fillRect(0, 0, W, top);
+    ctx.fillRect(0, H - bot, W, bot);
+    if (kc.slowmo) {
+      // a cold tint while time is slowed
+      const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.3, W / 2, H / 2, Math.max(W, H) * 0.7);
+      g.addColorStop(0, 'rgba(20,40,60,0)');
+      g.addColorStop(1, 'rgba(20,40,60,0.35)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, top, W, H - top - bot);
+    }
+    const ty = top - (top - s.t) / 2;
+    // ● KILLCAM
+    ctx.textAlign = 'left';
+    if (Math.floor(performance.now() / 450) % 2 === 0) {
+      ctx.fillStyle = '#e8473b';
+      ctx.beginPath();
+      ctx.arc(s.l + 20, ty, 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.font = '700 17px "Barlow Condensed", sans-serif';
+    ctx.fillStyle = '#f2f0e6';
+    ctx.fillText(tr('KILLCAM'), s.l + 32, ty + 1);
+    if (kc.slowmo) {
+      ctx.font = 'italic 700 13px "Barlow Condensed", sans-serif';
+      ctx.fillStyle = '#9fd3ff';
+      ctx.fillText(`${tr('SLOW MOTION')} ×${kc.slowK.toFixed(1)}`, s.l + 32 + ctx.measureText(tr('KILLCAM')).width + 54, ty + 1);
+    }
+    // who did it
+    const k = kc.killer;
+    if (k) {
+      ctx.textAlign = 'center';
+      ctx.font = '500 11px "Barlow Condensed", sans-serif';
+      ctx.fillStyle = 'rgba(230,225,210,0.75)';
+      ctx.fillText(tr('Knocked out by'), W / 2, ty - 8);
+      ctx.font = '700 16px "Barlow Condensed", sans-serif';
+      ctx.fillStyle = TEAM_COL.enemy;
+      ctx.fillText(`${k.name} · ${k.spec.name}`, W / 2, ty + 8);
+    }
+    // the player's own tank off the edge of the picture: point at it
+    const vm = kc.victimMark;
+    const x0 = 26;
+    const x1 = W - 26;
+    const y0 = top + 18;
+    const y1 = H - bot - 18;
+    if (vm && (vm.x < x0 || vm.x > x1 || vm.y < y0 || vm.y > y1)) {
+      // where the line from the killer (or the middle of the picture) toward us leaves the view
+      const km = kc.killerMark;
+      const o = km && km.x > x0 && km.x < x1 && km.y > y0 && km.y < y1 ? km : { x: W / 2, y: (top + H - bot) / 2 };
+      const ang = Math.atan2(vm.y - o.y, vm.x - o.x);
+      const c = Math.cos(ang);
+      const sn = Math.sin(ang);
+      const kx = Math.abs(c) > 1e-3 ? ((c > 0 ? x1 : x0) - o.x) / c : 1e9;
+      const ky = Math.abs(sn) > 1e-3 ? ((sn > 0 ? y1 : y0) - o.y) / sn : 1e9;
+      const k = Math.max(0, Math.min(kx, ky));
+      const ex = o.x + c * k;
+      const ey = o.y + sn * k;
+      ctx.save();
+      ctx.translate(ex, ey);
+      ctx.fillStyle = TEAM_COL.friend;
+      ctx.save();
+      ctx.rotate(ang);
+      ctx.beginPath();
+      ctx.moveTo(12, 0);
+      ctx.lineTo(-2, -8);
+      ctx.lineTo(-2, 8);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+      ctx.textAlign = 'center';
+      ctx.font = '700 12px "Barlow Condensed", sans-serif';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+      const ly = Math.sin(ang) > 0.5 ? -14 : 18;
+      ctx.strokeText(tr('You'), -Math.cos(ang) * 10, ly);
+      ctx.fillStyle = '#cfe2ff';
+      ctx.fillText(tr('You'), -Math.cos(ang) * 10, ly);
+      ctx.restore();
+    }
+    // the knock-out stamp once the shell has landed
+    if (kc.afterKill) {
+      const u = clamp((kc.rt - kc.deathT) / 0.22, 0, 1);
+      const title = this.deathInfo?.res?.title ?? tr('KNOCKED OUT');
+      ctx.save();
+      ctx.translate(W / 2, top + (H - top - bot) * 0.22);
+      const sc = 1.5 - 0.5 * u;
+      ctx.scale(sc, sc);
+      ctx.globalAlpha = a * u;
+      ctx.textAlign = 'center';
+      ctx.font = 'italic 700 30px "Barlow Condensed", sans-serif';
+      ctx.lineWidth = 5;
+      ctx.strokeStyle = 'rgba(20,6,4,0.75)';
+      ctx.strokeText(title, 0, 0);
+      ctx.fillStyle = '#e8473b';
+      ctx.fillText(title, 0, 0);
+      ctx.restore();
+    }
+    // progress
+    const by = H - bot / 2 - (s.b ? s.b / 2 : 0);
+    const bx0 = s.l + 18;
+    const bx1 = W - s.r - 136;
+    ctx.fillStyle = 'rgba(255,255,255,0.16)';
+    ctx.fillRect(bx0, by - 1.5, bx1 - bx0, 3);
+    ctx.fillStyle = '#f0b43c';
+    ctx.fillRect(bx0, by - 1.5, (bx1 - bx0) * kc.progress, 3);
+    // the kill on the timeline
+    const kx = bx0 + (bx1 - bx0) * kc.killAt;
+    ctx.fillStyle = '#e8473b';
+    ctx.beginPath();
+    ctx.moveTo(kx, by - 6);
+    ctx.lineTo(kx + 4, by - 11);
+    ctx.lineTo(kx - 4, by - 11);
+    ctx.closePath();
+    ctx.fill();
+    for (const bt of this.buttons) {
+      if (bt.id === 'skip') {
+        ctx.fillStyle = 'rgba(40,40,36,0.9)';
+        roundRect(ctx, bt.x, bt.y, bt.w!, bt.h!, 5);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(240,180,90,0.85)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'center';
+        ctx.font = '700 14px "Barlow Condensed", sans-serif';
+        ctx.fillText(`${tr('SKIP')} ▸`, bt.x + bt.w! / 2, bt.y + bt.h! / 2 + 1);
+      } else this.drawTopBtn(ctx, bt);
+    }
     ctx.restore();
   }
 

@@ -6,7 +6,7 @@ const page = await ctx.newPage();
 page.on('pageerror', (e) => console.log('[pageerror]', e.message, e.stack?.split('\n').slice(0,4).join(' | ')));
 await page.goto('http://localhost:5173/');
 await page.waitForTimeout(600);
-await page.evaluate((l) => { const s = window.__pen.save(); s.settings.lang = l; s.settings.map = 'outpost'; }, lang);
+await page.evaluate((l) => { const s = window.__pen.save(); s.settings.lang = l; s.settings.map = 'outpost'; s.settings.killcam = false; }, lang);
 await page.mouse.click(400, 200);
 await page.waitForTimeout(500);
 await page.evaluate(() => window.__pen.startBattle());

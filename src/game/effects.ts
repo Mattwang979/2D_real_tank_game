@@ -53,6 +53,8 @@ export class Effects {
   parts: Particle[] = [];
   theme: Theme;
   wind = { x: 0.9, y: -0.55 };
+  /** called with every new particle (the kill replay records them) */
+  onAdd: ((p: Particle) => void) | null = null;
   private tex: Record<string, HTMLCanvasElement>;
 
   constructor(theme: Theme) {
@@ -71,7 +73,7 @@ export class Effects {
 
   private add(p: Partial<Particle> & { kind: PKind; x: number; y: number }) {
     if (this.parts.length > 900) this.parts.splice(0, 100);
-    this.parts.push({
+    const q = {
       vx: 0,
       vy: 0,
       life: 1,
@@ -84,7 +86,15 @@ export class Effects {
       high: false,
       drag: 1.5,
       ...p,
-    } as Particle);
+    } as Particle;
+    this.parts.push(q);
+    this.onAdd?.(q);
+  }
+
+  /** Replay: put a recorded particle back as it was when it appeared. */
+  restore(p: Particle) {
+    if (this.parts.length > 900) this.parts.splice(0, 100);
+    this.parts.push({ ...p });
   }
 
   muzzle(x: number, y: number, ang: number, caliber: number, brake: boolean) {

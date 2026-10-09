@@ -6,13 +6,16 @@ import '@fontsource/barlow-condensed/700-italic.css';
 import './styles.css';
 
 import { audio } from './core/audio';
+import { haptics } from './core/haptics';
 import { voice } from './core/voice';
 import { get } from './core/save';
 import { Battle } from './game/battle';
 import { MAPS, type MapDef } from './game/map';
+import { ReplayRecorder } from './game/replay';
 import { pickWeather, WEATHERS, type WeatherId } from './game/weather';
 import type { ClientGame, ClientRoom, HostRoom, NetSession } from './net/session';
 import { BattleRenderer } from './render/battleRender';
+import { KillCam } from './render/killcam';
 import { confirmBox, h, modal, settingsMenu, toast } from './ui/common';
 import { Hangar } from './ui/hangar';
 import { Hud } from './ui/hud';
@@ -39,6 +42,7 @@ setLang(settings.lang);
 audio.setVolume(settings.volume);
 voice.enabled = settings.voice;
 voice.volume = settings.volume;
+haptics.enabled = settings.haptics;
 
 let current: ScreenId = 'title';
 const title = new Title(screens.title);
@@ -117,6 +121,7 @@ let battle: Battle | null = null;
 let renderer: BattleRenderer | null = null;
 let hud: Hud | null = null;
 let net: NetSession | null = null;
+let recorder: ReplayRecorder | null = null;
 let paused = false;
 let endedAt = -1;
 let rafId = 0;
@@ -179,6 +184,11 @@ async function runBattle(b: Battle, session: NetSession | null) {
   hd.onPause = () => openPause();
   if (s.stats.battles < 3) hd.tutorial = 14;
   hd.onLeave = () => leaveBattle();
+  // kill replay: keep the last seconds of the battle on record
+  const rec = s.settings.killcam ? new ReplayRecorder(b) : null;
+  const kc = rec ? new KillCam(b, r, rec) : null;
+  if (kc) hd.attachKillcam(kc);
+  recorder = rec;
   battle = b;
   renderer = r;
   hud = hd;
@@ -195,8 +205,8 @@ async function runBattle(b: Battle, session: NetSession | null) {
     const raw = (now - last) / 1000;
     const dt = Math.min(0.05, raw);
     last = now;
-    // automatic quality fallback when the device can't keep ~40 fps
-    if (!paused && r.quality === 'high' && raw < 0.5) {
+    // automatic quality fallback when the device can't keep ~40 fps (the kill replay doesn't count)
+    if (!paused && !kc?.active && r.quality === 'high' && raw < 0.5) {
       slow = raw > 1 / 38 ? slow + raw : Math.max(0, slow - raw * 0.5);
       if (slow > 4) {
         r.quality = 'low';
@@ -209,14 +219,23 @@ async function runBattle(b: Battle, session: NetSession | null) {
     if (!simPaused) {
       hd.update(dt);
       session?.beforeUpdate(dt);
+      rec?.tick(dt);
       const steps = dt > 1 / 45 ? 2 : 1;
       for (let i = 0; i < steps; i++) b.update(dt / steps);
+      rec?.capture();
       session?.afterUpdate(dt, b.events);
       for (const ev of b.events) hd.handle(ev);
       b.events.length = 0;
     }
     hd.netInfo = session ? session.info() : null;
-    r.render(simPaused ? 0 : dt);
+    if (kc && (kc.active || kc.pending)) {
+      // a replay only makes sense while we wait to respawn (a client may hear of its death a
+      // snapshot before its slot shows it, so only a new tank or the end of the battle cancels it)
+      if (b.state === 'ended' || b.player !== kc.victim) kc.stop(false);
+      else kc.update(simPaused ? 0 : dt);
+    }
+    if (kc?.active) kc.render(simPaused ? 0 : dt);
+    else r.render(simPaused ? 0 : dt);
     hd.draw(r.ctx);
     if (b.state === 'ended') {
       if (endedAt < 0) endedAt = now;
@@ -280,6 +299,9 @@ function finishBattle() {
   if (!b) return;
   cancelAnimationFrame(rafId);
   hud?.destroy();
+  recorder?.dispose();
+  recorder = null;
+  haptics.stop();
   audio.engineStop();
   audio.ambience(null);
   voice.stop();
@@ -329,4 +351,5 @@ applyI18n();
   openLobby,
   save: get,
   voice,
+  haptics,
 };

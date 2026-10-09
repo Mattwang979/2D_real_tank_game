@@ -1,6 +1,7 @@
 // Small DOM helpers shared by the menu screens.
 
 import { audio } from '../core/audio';
+import { haptics } from '../core/haptics';
 import { voice } from '../core/voice';
 import { get, reset, save } from '../core/save';
 import { VEHICLES, type VehicleSpec, penAt } from '../data/vehicles';
@@ -142,6 +143,12 @@ export function settingsMenu(onChange: () => void) {
       h('div', { class: 'label' }, t('Vibration')),
       seg([['on', t('On')], ['off', t('Off')]], s.haptics ? 'on' : 'off', (v) => {
         s.haptics = v === 'on';
+        haptics.enabled = s.haptics;
+        if (s.haptics) haptics.pulse([40, 50, 40], 1, 'test', true);
+      }),
+      h('div', { class: 'label' }, t('Kill replay')),
+      seg([['on', t('On')], ['off', t('Off')]], s.killcam ? 'on' : 'off', (v) => {
+        s.killcam = v === 'on';
       }),
       h('div', { class: 'label' }, t('Player name')),
       name,

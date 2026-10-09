@@ -51,6 +51,9 @@ export class BattleRenderer {
   shake = 0;
   weather: WeatherFx;
   private chunkBudget = { n: 2 };
+  /** kill replay: the camera is placed from outside and the view follows `replayFocus` */
+  private fixedView = false;
+  private replayFocus: Tank | null = null;
 
   constructor(canvas: HTMLCanvasElement, b: Battle, quality: 'high' | 'low') {
     this.canvas = canvas;
@@ -112,6 +115,7 @@ export class BattleRenderer {
   }
 
   focus(): Tank | null {
+    if (this.fixedView) return this.replayFocus;
     const b = this.b;
     const p = b.player;
     if (p && p.alive) return p;
@@ -127,8 +131,8 @@ export class BattleRenderer {
     const ctx = this.ctx;
     const f = this.focus();
     const tz = this.baseZoom * this.zoomMul;
-    this.zoom += (tz - this.zoom) * (1 - Math.exp(-dt * 6));
-    if (f) {
+    if (!this.fixedView) this.zoom += (tz - this.zoom) * (1 - Math.exp(-dt * 6));
+    if (f && !this.fixedView) {
       let look = f.alive ? (this.W / this.zoom) * 0.2 : 0;
       const zk = clamp((this.zoomMul - 1) / 1.4, 0, 1);
       if (f.alive && f === b.player && zk > 0) {
@@ -236,6 +240,38 @@ export class BattleRenderer {
     wx.drawScreen(ctx, this);
 
     this.drawOverlays(ctx, dt);
+  }
+
+  /**
+   * Kill replay: draw `view.b` — a stand-in battle rebuilt from recorded frames — from a camera the
+   * replay controls. Everything this renderer keeps for the live view is put back afterwards.
+   */
+  renderReplay(dt: number, view: { b: Battle; cam: V2; zoom: number; focus: Tank | null; shake: number }) {
+    const keep = { b: this.b, cam: this.cam, zoom: this.zoom, shake: this.shake, popups: this.popups, camLock: this.camLock, aimPrediction: this.aimPrediction, aimEnd: this.aimEnd };
+    this.b = view.b;
+    this.weather.b = view.b;
+    this.cam = { x: view.cam.x, y: view.cam.y };
+    this.zoom = view.zoom;
+    this.shake = view.shake;
+    this.popups = [];
+    this.camLock = null;
+    this.replayFocus = view.focus;
+    this.fixedView = true;
+    try {
+      this.render(dt);
+    } finally {
+      this.fixedView = false;
+      this.replayFocus = null;
+      this.b = keep.b;
+      this.weather.b = keep.b;
+      this.cam = keep.cam;
+      this.zoom = keep.zoom;
+      this.shake = keep.shake;
+      this.popups = keep.popups;
+      this.camLock = keep.camLock;
+      this.aimPrediction = keep.aimPrediction;
+      this.aimEnd = keep.aimEnd;
+    }
   }
 
   private tankVisible(t: Tank): boolean {

@@ -135,6 +135,7 @@ const ZH: Record<string, string> = {
   'Loading': '載入中',
   'Deploy': '出擊',
   'KNOCKED OUT': '已被擊毀',
+  'COOK-OFF': '彈藥殉爆',
   '◀ DRAG TO DRIVE': '◀ 拖曳移動',
   'Push where you want to go · pull back to reverse': '往要去的方向推 · 往後拉倒車',
   'DRAG TO AIM ▶': '拖曳瞄準 ▶',
@@ -273,6 +274,11 @@ const ZH: Record<string, string> = {
   You: '你',
   'Voice callouts': '語音播報',
   Vibration: '震動回饋',
+  'Kill replay': '擊殺重播',
+  KILLCAM: '擊殺重播',
+  'Knocked out by': '擊毀你的是',
+  SKIP: '略過',
+  'SLOW MOTION': '慢動作',
 };
 
 export function t(s: string): string {
