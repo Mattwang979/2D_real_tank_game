@@ -360,8 +360,17 @@ export class AIController {
     const heavy = t.spec.cls === 'heavy' || t.spec.cls === 'td';
     const cap = b.map.capture;
     const inCap = dist(t.pos, cap) < cap.r * 0.8;
-    const capping = this.role === 'capper' && !(b.capture.owner === t.team && !b.capture.contested);
-    const stopToShoot = engaging && (capping ? inCap || eDist < 45 : heavy || eDist < 140 || this.role === 'support' || (this.goal && dist(t.pos, this.goal) < 8));
+    // a radio order (come help / follow / go there) beats holding the point or long-range sniping
+    const ordered = !!this.order;
+    const capping = !ordered && this.role === 'capper' && !(b.capture.owner === t.team && !b.capture.contested);
+    const atOrder = ordered && !!this.goal && dist(t.pos, this.goal) < 10;
+    const stopToShoot =
+      engaging &&
+      (ordered
+        ? atOrder || eDist < 55
+        : capping
+          ? inCap || eDist < 45
+          : heavy || eDist < 140 || this.role === 'support' || (this.goal && dist(t.pos, this.goal) < 8));
     if (stopToShoot && e) {
       // angle the hull: heavies keep ~28° off-angle, casemates point the gun
       const bearing = Math.atan2(e.pos.y - t.pos.y, e.pos.x - t.pos.x);
@@ -406,7 +415,8 @@ export class AIController {
     }
     t.steer = clamp(diff * 2.2, -1, 1);
     const ad = Math.abs(diff);
-    t.throttle = ad > 1.6 ? 0.1 : ad > 0.8 ? 0.4 : 1;
+    // a waypoint behind us: get off the gas so the hull pivots instead of swinging a wide U-turn
+    t.throttle = ad > 1.6 ? (t.speed > 3 ? 0 : 0.1) : ad > 0.8 ? 0.4 : 1;
     if (engaging) t.throttle *= 0.75;
     // sprint on long, straight drives
     if (!engaging && ad < 0.3 && this.goal && dist(t.pos, this.goal) > 110 && t.canBoost() && rand.chance(dt * 0.15)) t.startBoost();

@@ -491,7 +491,12 @@ export class Battle {
     mates.sort((a, b) => dist(a.tank.pos, at) - dist(b.tank.pos, at));
     let chosen = mates;
     if (kind === 'help' || kind === 'follow' || kind === 'goto') chosen = mates.slice(0, 2);
-    else chosen = mates.filter(() => rand.chance(0.7));
+    else {
+      // most of the team acts on it; the nearest tank not already doing it always does
+      const want = kind === 'attack' ? 'capper' : 'support';
+      const first = mates.find((a) => a.role !== want && (kind === 'attack' || a.role === 'capper'));
+      chosen = mates.filter((a) => a === first || rand.chance(0.75));
+    }
     if (!chosen.length) chosen = [mates[0]];
     for (const a of chosen) a.giveOrder(kind, at, from, this.time);
     const who = chosen[Math.floor(rand.next() * chosen.length)].tank;

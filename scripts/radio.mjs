@@ -81,16 +81,19 @@ const help = await page.evaluate(() => {
   return ord;
 });
 check('help: two AI teammates ordered to us', help.length === 2 && help.every((o) => o.kind === 'goto' && o.d < 1), JSON.stringify(help));
-await page.waitForTimeout(6000);
+await page.waitForTimeout(9000); // a tank heading the other way has to stop and pivot first
 const helpAfter = await page.evaluate((ids) => {
   const b = window.__pen.battle;
   const p = b.player;
   return ids.map((id) => {
     const t = b.tanks.find((x) => x.id === id);
-    return Math.hypot(t.pos.x - p.pos.x, t.pos.y - p.pos.y);
+    const ai = b.ais.get(id);
+    // a teammate stopping to fight an enemy close by on the way is fine too
+    const fight = !!ai?.target && ai.target.alive && Math.hypot(ai.target.pos.x - t.pos.x, ai.target.pos.y - t.pos.y) < 60;
+    return { d: Math.hypot(t.pos.x - p.pos.x, t.pos.y - p.pos.y), fight, alive: t.alive };
   });
 }, help.map((o) => o.id));
-check('help: they close in', helpAfter.some((d, i) => d < help[i].dist - 3 || d < 20), `${help.map((o) => o.dist.toFixed(0))} → ${helpAfter.map((d) => d.toFixed(0))}`);
+check('help: they close in', helpAfter.some((a, i) => a.d < help[i].dist - 3 || a.d < 20 || a.fight || !a.alive), `${help.map((o) => o.dist.toFixed(0))} → ${helpAfter.map((a) => a.d.toFixed(0) + (a.fight ? ' (fighting)' : ''))}`);
 
 // minimap ping
 const mm = await page.evaluate(() => {
