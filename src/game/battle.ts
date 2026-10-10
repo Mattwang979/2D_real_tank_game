@@ -14,11 +14,12 @@ import { Effects } from './effects';
 import { type Building, type GameMap, type Tree, bermCrossing, buildMap, collideStatic, damageBuilding, losBlocked, MAPS, onBerm, onRoad, setBuildingState, shellObstacleHit, structDamage, type Contact } from './map';
 import { CARRIER, type Carrier, carrierHit, driveCarrier } from './carrier';
 import { NavGrid } from './nav';
-import { ARTY, ARTY_EVERY, ARTY_SHELL, type ArtyStrike, RECON_EVERY, RECON_TIME, type ReconFlight, type SupportStock } from './support';
+import { ARTY, ARTY_EVERY, ARTY_SHELL, type ArtyStrike, planRecon, RECON_EVERY, reconRevealing, reconTotal, type ReconFlight, type SupportStock } from './support';
 import { Tank } from './tank';
 import { canSee, visibilityPolygon } from './vision';
 import { FLARE, type Flare, flareDone, inFlareLight, isWeatherId, type WeatherDef, type WeatherId, WEATHERS } from './weather';
 import { RADIO, RADIO_GAP, radioIndex } from './radio';
+import { type AILevel, isAILevel } from './difficulty';
 
 export interface Projectile {
   id: number;
@@ -117,6 +118,10 @@ export interface BattleConfig {
   mode?: 'local' | 'host' | 'replica';
   /** weather / time of day (default clear) */
   weather?: WeatherId;
+  /** AI difficulty (default normal) */
+  aiLevel?: AILevel;
+  /** fill the empty places with AI tanks (default true; multiplayer rooms can turn it off) */
+  fillAI?: boolean;
 }
 
 export interface BattleHooks {
@@ -202,11 +207,18 @@ export class Battle {
   private aiCallAt: [number, number] = [-99, -99];
   battleBR: number;
   enemyPool: VehicleSpec[];
+  /** AI difficulty for every AI tank in this battle */
+  aiLevel: AILevel;
+  /** empty places get AI tanks (and the AI reinforcement pool) */
+  fillAI: boolean;
 
   constructor(cfg: BattleConfig, hooks: BattleHooks = {}) {
     this.cfg = cfg;
     this.hooks = hooks;
     this.mode = cfg.mode ?? 'local';
+    this.aiLevel = isAILevel(cfg.aiLevel) ? cfg.aiLevel : 'normal';
+    this.fillAI = cfg.fillAI !== false;
+    if (!this.fillAI) this.reinforcements = [0, 0];
     const def = MAPS.find((m) => m.id === cfg.mapId) ?? MAPS[0];
     this.map = buildMap(def, cfg.seed ?? 1234);
     this.weather = WEATHERS[isWeatherId(cfg.weather) ? cfg.weather : 'clear'];
@@ -239,7 +251,7 @@ export class Battle {
         const s = spawns[order[i]];
         const h = teamHumans[i];
         if (h) this.spawnHuman(h, h.lineup[0], { x: s.x, y: s.y }, s.ang);
-        else this.spawnAI(team, s, names.pop() ?? 'Tank', order[i]);
+        else if (this.fillAI) this.spawnAI(team, s, names.pop() ?? 'Tank', order[i]);
       }
     }
   }
@@ -420,15 +432,13 @@ export class Battle {
     const st = this.supportOf(t);
     if (this.mode === 'replica' || !t.alive || st.recon <= 0) return false;
     st.recon--;
-    const S = this.map.size;
-    const y = rand.range(S * 0.25, S * 0.75);
-    const fromLeft = this.map.spawns[t.team][0].x < S / 2;
-    const x0 = fromLeft ? -40 : S + 40;
-    const x1 = fromLeft ? S + 40 : -40;
-    this.recons.push({ id: this.supportId++, team: t.team, t: 0, T: RECON_TIME, x0, y0: y + rand.range(-40, 40), x1, y1: S - y + rand.range(-40, 40) });
-    this.emit({ type: 'notice', text: 'Recon plane overhead — enemies revealed', color: '#9fd3ff', team: t.team });
-    this.emit({ type: 'notice', text: 'Enemy recon plane!', color: '#ff8a5c', team: t.team === 0 ? 1 : 0 });
-    audio.plane(RECON_TIME, 0.1);
+    const kind = t.spec.nation === 'germany' ? 1 : t.spec.nation === 'ussr' ? 2 : 0;
+    const enemy: 0 | 1 = t.team === 0 ? 1 : 0;
+    const r = planRecon(this.supportId++, t.team, kind, this.map.size, this.map.capture, this.map.spawns[t.team][2], this.map.spawns[enemy][2], () => rand.next());
+    this.recons.push(r);
+    this.emit({ type: 'notice', text: 'Recon plane on the way', color: '#9fd3ff', team: t.team });
+    this.emit({ type: 'notice', text: 'Enemy recon plane!', color: '#ff8a5c', team: enemy });
+    audio.plane(reconTotal(r), 0.1);
     return true;
   }
 
@@ -529,7 +539,7 @@ export class Battle {
 
   private updateSupport(dt: number) {
     for (const r of this.recons) r.t += dt;
-    this.recons = this.recons.filter((r) => r.t < r.T);
+    this.recons = this.recons.filter((r) => r.t < reconTotal(r));
     for (const a of this.artys) {
       a.t += dt;
       while (a.whistled < a.times.length && a.t >= a.times[a.whistled] - 1.1) {
@@ -1482,7 +1492,7 @@ export class Battle {
       for (const t of this.tanks) if (t.alive && (t.burning > 0 || inFlareLight(this.flares, t.pos))) this.lit.add(t.id);
     }
     for (const team of [0, 1] as const) {
-      const recon = this.recons.some((r) => r.team === team);
+      const recon = this.recons.some((r) => r.team === team && reconRevealing(r));
       const sc = this.spottedCarriers[team];
       sc.clear();
       for (const c of this.carriers) if (c.team !== team && c.state !== 'dead' && (recon || this.teamSees(team, c.pos))) sc.add(c.id);
@@ -1490,7 +1500,7 @@ export class Battle {
     for (const team of [0, 1] as const) {
       const set = this.spotted[team];
       set.clear();
-      const recon = this.recons.some((r) => r.team === team);
+      const recon = this.recons.some((r) => r.team === team && reconRevealing(r));
       for (const e of this.tanks) {
         if (!e.alive || e.team === team) continue;
         if (recon) {

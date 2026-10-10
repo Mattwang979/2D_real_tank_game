@@ -5,7 +5,7 @@ import { get, save, toggleLineup } from '../core/save';
 import { CLASS_NAMES, getVehicle, type VehicleSpec } from '../data/vehicles';
 import { MAPS } from '../game/map';
 import { drawArmorView, drawTankShadowVector, drawTankVector, drawXray, drawTankSprite } from '../render/tankRender';
-import { NATION_FLAG, h, modal, toast, vehicleStats, weatherChip } from './common';
+import { NATION_FLAG, aiChip, h, modal, toast, vehicleStats, weatherChip } from './common';
 import { t } from './i18n';
 
 type Mode = 'ext' | 'armor' | 'xray';
@@ -60,6 +60,7 @@ export class Hangar {
       'div',
       { class: 'topbar' },
       h('div', { class: 'logo' }, 'PENE', h('span', {}, 'TRATION')),
+      h('button', { class: 'tree-btn', onclick: () => this.onTree() }, t('TECH TREE')),
       this.cur,
       h('button', { class: 'icon-btn', onclick: () => this.onSettings(), 'aria-label': 'Settings' }, '⚙'),
     );
@@ -81,8 +82,16 @@ export class Hangar {
         }),
       ),
       this.mapsEl,
-      h('div', { style: 'flex:1' }),
-      h('button', { class: 'btn', onclick: () => this.onTree() }, t('TECH TREE')),
+      h(
+        'div',
+        { class: 'label-row' },
+        h('div', { class: 'label' }, t('AI')),
+        aiChip(get().settings.aiLevel, (id) => {
+          get().settings.aiLevel = id;
+          save();
+          this.refresh();
+        }),
+      ),
     );
     this.modesEl = h('div', { class: 'seg viewmodes' });
     this.lineupEl = h('div', { class: 'lineup-bar' });

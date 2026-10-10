@@ -6,7 +6,7 @@ import { MAPS } from '../game/map';
 import { NetError, normCode } from '../net/peer';
 import { type ClientGame, ClientRoom, HostRoom, type RejectReason, TEAM_MAX } from '../net/session';
 import type { LobbyPlayer } from '../net/protocol';
-import { h, modal, toast, weatherChip } from './common';
+import { aiChip, aiLabel, h, modal, toast, weatherChip } from './common';
 import { t } from './i18n';
 
 export class Lobby {
@@ -73,7 +73,7 @@ export class Lobby {
           ),
         ),
         h('div', { class: 'lb-namerow' }, h('span', { class: 'label' }, t('Player name')), name, h('span', { class: 'lb-lineup' }, `${t('Lineup')}: ${s.lineup.map((id) => getVehicle(id).name).join(' · ')}`)),
-        h('div', { class: 'lb-note' }, t('Up to 5 vs 5 players — empty places are filled with AI tanks. Same Wi-Fi connects best.')),
+        h('div', { class: 'lb-note' }, t('Up to 5 vs 5 players — the host decides whether AI tanks fill the empty places. Same Wi-Fi connects best.')),
         err ? h('div', { class: 'lb-err' }, err) : null,
       ),
     );
@@ -124,7 +124,7 @@ export class Lobby {
     });
     const s = get();
     try {
-      const room = await HostRoom.create(s.playerName, s.lineup, s.settings.map, s.settings.weather);
+      const room = await HostRoom.create(s.playerName, s.lineup, s.settings.map, s.settings.weather, s.settings.mpFillAI, s.settings.aiLevel);
       if (token !== this.busyToken) {
         room.close();
         return;
@@ -190,6 +190,8 @@ export class Lobby {
     const me = players.find((p) => p.key === myKey);
     const mapId = this.host ? this.host.mapId : this.client!.mapId;
     const weather = this.host ? this.host.weather : this.client!.weather;
+    const fillAI = this.host ? this.host.fillAI : this.client!.fillAI;
+    const aiLevel = this.host ? this.host.aiLevel : this.client!.aiLevel;
     const code = room.code;
 
     const team = (tm: 0 | 1) => {
@@ -210,7 +212,8 @@ export class Lobby {
         box.append(row);
       }
       const ai = TEAM_MAX - list.length;
-      if (ai > 0) box.append(h('div', { class: 'lb-p ai' }, h('b', {}, `+ ${ai} AI`)));
+      if (ai > 0 && fillAI) box.append(h('div', { class: 'lb-p ai' }, h('b', {}, `+ ${ai} AI`)));
+      else if (!fillAI && !list.length) box.append(h('div', { class: 'lb-p ai warn' }, h('b', {}, t('Needs at least one player'))));
       return box;
     };
 
@@ -219,6 +222,37 @@ export class Lobby {
       ? h('div', { class: 'map-pick lb-maps' }, ...maps.map(([id, name]) => h('button', { class: id === mapId ? 'on' : '', onclick: () => this.host!.setMap(id) }, name)))
       : h('div', { class: 'lb-mapname' }, `${t('Map')}: ${maps.find((m) => m[0] === mapId)?.[1] ?? '—'}`);
     const wxEl = weatherChip(weather, isHost ? (id) => this.host?.setWeather(id) : null);
+    // AI tanks: fill the empty places or not, and how good they are
+    const aiEl = isHost
+      ? h(
+          'div',
+          { class: 'lb-aictl' },
+          h(
+            'div',
+            { class: 'seg lb-aiseg' },
+            ...([
+              [true, t('On')],
+              [false, t('Off')],
+            ] as Array<[boolean, string]>).map(([on, label]) =>
+              h('button', {
+                class: on === fillAI ? 'on' : '',
+                onclick: () => {
+                  get().settings.mpFillAI = on;
+                  save();
+                  this.host?.setFillAI(on);
+                },
+              }, label),
+            ),
+          ),
+          fillAI
+            ? aiChip(aiLevel, (id) => {
+                get().settings.aiLevel = id;
+                save();
+                this.host?.setAILevel(id);
+              })
+            : null,
+        )
+      : h('span', { class: 'wx-chip ro' }, fillAI ? aiLabel(aiLevel) : t('Players only'));
 
     const switchTeam = () => {
       if (!me) return;
@@ -244,15 +278,25 @@ export class Lobby {
         h(
           'div',
           { class: 'lb-bottom' },
-          h('div', { class: 'lb-col' }, h('div', { class: 'label-row' }, h('div', { class: 'label' }, t('Map')), wxEl), mapEl),
+          h('div', { class: 'lb-col' }, h('div', { class: 'label-row' }, h('div', { class: 'label' }, t('AI tanks')), aiEl), h('div', { class: 'label-row' }, h('div', { class: 'label' }, t('Map')), wxEl), mapEl),
           h('div', { class: 'lb-col lb-mine' }, h('button', { class: 'btn', onclick: () => switchTeam() }, t('Switch team')), h('button', { class: 'btn', onclick: () => this.editLineup() }, `${t('Lineup')} ✎`)),
           isHost
-            ? h('button', { class: 'btn primary lb-start', onclick: () => this.host && this.onHostStart(this.host) }, t('START BATTLE'))
+            ? h('button', { class: 'btn primary lb-start', onclick: () => this.tryStart() }, t('START BATTLE'))
             : h('div', { class: 'lb-wait' }, t('Waiting for the host to start…')),
         ),
-        h('div', { class: 'lb-note' }, isHost ? t('Your device runs the battle — keep the game open until it ends.') : t('Empty places are filled with AI tanks.')),
+        h('div', { class: 'lb-note' }, isHost ? t('Your device runs the battle — keep the game open until it ends.') : fillAI ? t('Empty places are filled with AI tanks.') : t('No AI tanks — players only.')),
       ),
     );
+  }
+
+  private tryStart() {
+    const room = this.host;
+    if (!room) return;
+    if (room.startProblem() === 'teams') {
+      toast(t('With AI tanks off, each team needs at least one player.'));
+      return;
+    }
+    this.onHostStart(room);
   }
 
   private confirmLeave() {

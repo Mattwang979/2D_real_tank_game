@@ -144,7 +144,7 @@ async function startBattle() {
   const mapDef = s.settings.map === 'random' ? MAPS[Math.floor(Math.random() * MAPS.length)] : MAPS.find((m) => m.id === s.settings.map) ?? MAPS[0];
   const weather = pickWeather(s.settings.weather);
   await showLoading(mapDef, weather);
-  const b = new Battle({ mapId: mapDef.id, lineup: s.lineup, playerName: s.playerName, seed: 1234, weather });
+  const b = new Battle({ mapId: mapDef.id, lineup: s.lineup, playerName: s.playerName, seed: 1234, weather, aiLevel: s.settings.aiLevel });
   await runBattle(b, null);
 }
 

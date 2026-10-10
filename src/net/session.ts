@@ -8,6 +8,8 @@ import type { ImpactResult } from '../game/armor';
 import { Battle, type BattleEvent, type NetFx, type PlayerSlot } from '../game/battle';
 import { MAPS } from '../game/map';
 import { isWeatherId, pickWeather } from '../game/weather';
+import { type AILevel, isAILevel } from '../game/difficulty';
+import { reconTotal } from '../game/support';
 import { Tank } from '../game/tank';
 import { audio } from '../core/audio';
 import { VEHICLES, getVehicle } from '../data/vehicles';
@@ -79,13 +81,16 @@ export class HostRoom {
   mapId: string;
   /** 'random' or a weather id */
   weather = 'random';
+  /** empty places get AI tanks */
+  fillAI = true;
+  aiLevel: AILevel = 'normal';
   phase: 'lobby' | 'game' | 'closed' = 'lobby';
   game: HostGame | null = null;
   onChange: () => void = () => {};
   onPlayerLeft: (name: string) => void = () => {};
   private nextKey = 1;
 
-  static async create(name: string, lineup: string[], mapId: string, weather = 'random'): Promise<HostRoom> {
+  static async create(name: string, lineup: string[], mapId: string, weather = 'random', fillAI = true, aiLevel: AILevel = 'normal'): Promise<HostRoom> {
     let last: unknown = null;
     for (let i = 0; i < 5; i++) {
       const code = makeCode();
@@ -93,6 +98,8 @@ export class HostRoom {
         const peer = await openPeer(ROOM_PREFIX + code);
         const room = new HostRoom(peer, code, name, lineup, mapId);
         room.weather = weather;
+        room.fillAI = fillAI;
+        room.aiLevel = isAILevel(aiLevel) ? aiLevel : 'normal';
         return room;
       } catch (e) {
         last = e;
@@ -202,6 +209,22 @@ export class HostRoom {
     this.broadcastLobby();
   }
 
+  setFillAI(on: boolean) {
+    this.fillAI = on;
+    this.broadcastLobby();
+  }
+
+  setAILevel(lv: AILevel) {
+    this.aiLevel = isAILevel(lv) ? lv : 'normal';
+    this.broadcastLobby();
+  }
+
+  /** Why the battle can't start yet (null = ready). Without AI both teams need a player. */
+  startProblem(): 'teams' | null {
+    if (!this.fillAI && (this.teamCount(0) === 0 || this.teamCount(1) === 0)) return 'teams';
+    return null;
+  }
+
   /** Host-side team switch (host itself or moving another player). */
   setTeam(key: string, team: 0 | 1) {
     const p = this.players.find((x) => x.key === key);
@@ -216,7 +239,7 @@ export class HostRoom {
   }
 
   broadcastLobby() {
-    const msg: HostMsg = { t: 'lobby', players: this.players, mapId: this.mapId, code: this.code, weather: this.weather };
+    const msg: HostMsg = { t: 'lobby', players: this.players, mapId: this.mapId, code: this.code, weather: this.weather, ai: this.fillAI ? 1 : 0, lvl: this.aiLevel };
     for (const c of this.conns.values()) send(c, msg);
     this.onChange();
   }
@@ -228,8 +251,9 @@ export class HostRoom {
     const seed = 1 + Math.floor(Math.random() * 1e6);
     const weather = pickWeather(this.weather);
     const slots = this.players.map((p) => ({ key: p.key, name: p.name, lineup: p.lineup, team: p.team }));
-    for (const c of this.conns.values()) send(c, { t: 'start', mapId, seed, weather, slots });
-    const b = new Battle({ mapId, seed, slots, localKey: 'host', mode: 'host', weather });
+    const ai = this.fillAI ? 1 : 0;
+    for (const c of this.conns.values()) send(c, { t: 'start', mapId, seed, weather, ai, lvl: this.aiLevel, slots });
+    const b = new Battle({ mapId, seed, slots, localKey: 'host', mode: 'host', weather, fillAI: this.fillAI, aiLevel: this.aiLevel });
     this.game = new HostGame(this, b);
     return b;
   }
@@ -449,7 +473,7 @@ class HostGame implements NetSession {
     return {
       cv,
       csp: [[...b.spottedCarriers[0]], [...b.spottedCarriers[1]]],
-      rc: b.recons.map((r) => [r.id, r.team, r2(r.x0), r2(r.y0), r2(r.x1), r2(r.y1), r2(r.t), r.T]),
+      rc: b.recons.map((r) => [r.id, r.team, r.kind, r2(r.ex), r2(r.ey), r2(r.cx), r2(r.cy), r2(r.r), r3(r.a0), r.dir, r3(r.tin), r2(r.t)]),
       ar: b.artys.map((a) => [a.id, a.team, r2(a.x), r2(a.y), r2(a.t), ...a.times.map(r2)]),
       tm: r2(b.time),
       tk: [r2(b.tickets[0]), r2(b.tickets[1])],
@@ -526,6 +550,8 @@ export class ClientRoom {
   players: LobbyPlayer[] = [];
   mapId = 'random';
   weather = 'random';
+  fillAI = true;
+  aiLevel: AILevel = 'normal';
   phase: 'lobby' | 'game' | 'closed' = 'lobby';
   game: ClientGame | null = null;
   onChange: () => void = () => {};
@@ -595,12 +621,14 @@ export class ClientRoom {
         this.players = m.players;
         this.mapId = m.mapId;
         this.weather = isWeatherId(m.weather) ? m.weather : 'random';
+        this.fillAI = m.ai !== 0;
+        this.aiLevel = isAILevel(m.lvl) ? m.lvl : 'normal';
         this.onChange();
         break;
       case 'start':
         if (!this.key) return;
         this.phase = 'game';
-        this.game = new ClientGame(this, new Battle({ mapId: m.mapId, seed: m.seed, slots: m.slots, localKey: this.key, mode: 'replica', weather: isWeatherId(m.weather) ? m.weather : 'clear' }));
+        this.game = new ClientGame(this, new Battle({ mapId: m.mapId, seed: m.seed, slots: m.slots, localKey: this.key, mode: 'replica', weather: isWeatherId(m.weather) ? m.weather : 'clear', fillAI: m.ai !== 0, aiLevel: isAILevel(m.lvl) ? m.lvl : 'normal' }));
         this.onStart(this.game);
         break;
       case 'closed':
@@ -851,11 +879,11 @@ export class ClientGame implements NetSession {
       slot.support.arty = me.su[1];
       if (slot.tank) slot.tank.streak = me.su[2];
     }
-    b.recons = (s.rc ?? []).map((r) => ({ id: r[0], team: r[1] as 0 | 1, x0: r[2], y0: r[3], x1: r[4], y1: r[5], t: r[6] + lat, T: r[7] }));
+    b.recons = (s.rc ?? []).map((r) => ({ id: r[0], team: r[1] as 0 | 1, kind: r[2] | 0, ex: r[3], ey: r[4], cx: r[5], cy: r[6], r: r[7], a0: r[8], dir: r[9] < 0 ? -1 : 1, tin: r[10], t: r[11] + lat }));
     b.artys = (s.ar ?? []).map((a) => ({ id: a[0], team: a[1] as 0 | 1, by: -1, x: a[2], y: a[3], t: a[4] + lat, times: a.slice(5), fired: 0, whistled: 0 }));
     for (const r of b.recons) if (!this.planes.has(r.id)) {
       this.planes.add(r.id);
-      audio.plane(Math.max(1, r.T - r.t), 0.1);
+      audio.plane(Math.max(1, reconTotal(r) - r.t), 0.1);
     }
     if (me.rw) slot.rewards.push(...me.rw);
     if (me.st) slot.stats = me.st;

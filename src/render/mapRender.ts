@@ -9,7 +9,7 @@ type Ctx = CanvasRenderingContext2D;
 
 export const CHUNK = 64;
 
-const THEME: Record<Theme, { base: string; grain: [number, number, number]; grainA: number; track: string; trackA: number; scorch: string }> = {
+export const THEME: Record<Theme, { base: string; grain: [number, number, number]; grainA: number; track: string; trackA: number; scorch: string }> = {
   grass: { base: '#4c5a37', grain: [30, 40, 20], grainA: 0.22, track: '#2a2f1c', trackA: 0.2, scorch: '#1c1a12' },
   desert: { base: '#b19c74', grain: [90, 75, 50], grainA: 0.2, track: '#6e5c3e', trackA: 0.26, scorch: '#3a3022' },
   city: { base: '#56534d', grain: [30, 30, 30], grainA: 0.22, track: '#1e1e1e', trackA: 0.13, scorch: '#151412' },

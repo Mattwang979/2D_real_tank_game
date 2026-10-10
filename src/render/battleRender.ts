@@ -5,7 +5,8 @@ import { plateMap, predictShot, type Prediction } from '../game/armor';
 import type { Battle } from '../game/battle';
 import { bermCover, shellObstacleHit } from '../game/map';
 import type { Tank } from '../game/tank';
-import { ARTY, reconPos } from '../game/support';
+import { ARTY, reconPos, reconRevealT, reconRevealing, type ReconFlight } from '../game/support';
+import { drawPlaneAt, drawPlaneShadow, PLANE_KINDS, PLANES } from './planeRender';
 import { drawCarrier, drawCrewWalk } from './carrierRender';
 import { MapRenderer } from './mapRender';
 import { WeatherFx } from './weatherRender';
@@ -23,6 +24,8 @@ interface Popup {
 }
 
 export const TEAM_COL = { friend: '#4d97ff', enemy: '#e5483b', neutral: '#d9d9d0' };
+/** how fast the recon camera's scan wave spreads over the map (m/s) */
+const RECON_WAVE = 250;
 
 export class BattleRenderer {
   canvas: HTMLCanvasElement;
@@ -51,6 +54,8 @@ export class BattleRenderer {
   shake = 0;
   weather: WeatherFx;
   private chunkBudget = { n: 2 };
+  /** exhaust puff timers per recon plane */
+  private puffAt = new Map<number, number>();
   /** kill replay: the camera is placed from outside and the view follows `replayFocus` */
   private fixedView = false;
   private replayFocus: Tank | null = null;
@@ -231,9 +236,9 @@ export class BattleRenderer {
     if (b.weather.id === 'night') {
       // darkness, lit by flares, fires and gun flashes
       wx.drawNight(ctx, this, x0, y0, x1, y1);
-      for (const rc of b.recons) this.drawPlane(ctx, rc.team, reconPos(rc));
+      for (const rc of b.recons) this.drawRecon(ctx, rc, dt);
     } else {
-      for (const rc of b.recons) this.drawPlane(ctx, rc.team, reconPos(rc));
+      for (const rc of b.recons) this.drawRecon(ctx, rc, dt);
       // fog of war outside the player's vision polygon
       if (b.player && b.player.alive && b.visionPoly.length > 2) this.drawFog(ctx, wx.fogColor());
     }
@@ -329,6 +334,12 @@ export class BattleRenderer {
     ctx.textBaseline = 'middle';
     ctx.fillText('A', c.x, c.y + 0.15);
     ctx.restore();
+  }
+
+  /** One tank with its shadow in the current world transform (the artillery map's magnifier). */
+  drawTankAt(ctx: Ctx, t: Tank) {
+    this.drawTankShadow(ctx, t);
+    this.drawTank(ctx, t);
   }
 
   private drawTankShadow(ctx: Ctx, t: Tank) {
@@ -435,47 +446,36 @@ export class BattleRenderer {
     ctx.restore();
   }
 
-  /** Recon aircraft high overhead, with its shadow far off on the ground. */
-  private drawPlane(ctx: Ctx, team: 0 | 1, p: { x: number; y: number; ang: number }) {
-    const sh = this.b.map.shadow;
-    const alt = 22;
-    const shape = (fill: string, wing: string) => {
-      ctx.fillStyle = wing;
-      ctx.beginPath();
-      ctx.roundRect(-1.0, -7.2, 2.2, 14.4, 0.8); // high wing
-      ctx.fill();
-      ctx.beginPath();
-      ctx.roundRect(-5.4, -2.6, 1.3, 5.2, 0.5); // tailplane
-      ctx.fill();
-      ctx.fillStyle = fill;
-      ctx.beginPath();
-      ctx.ellipse(-0.4, 0, 5.2, 0.75, 0, 0, Math.PI * 2); // fuselage
-      ctx.fill();
-    };
+  /** Recon aircraft: its soft shadow far off on the ground, the aircraft itself banking through
+   * its orbit, and a thin exhaust trail. */
+  private drawRecon(ctx: Ctx, rc: ReconFlight, dt: number) {
+    const b = this.b;
+    const p = reconPos(rc);
+    const kind = PLANE_KINDS[rc.kind] ?? 'l4';
+    const sh = b.map.shadow;
+    const sc = Math.max(8, this.spriteScale * 1.2);
+    // shadow (sharper and darker the lower it flies)
     ctx.save();
-    ctx.translate(p.x + sh.x * alt, p.y + sh.y * alt);
+    ctx.translate(p.x + sh.x * p.alt, p.y + sh.y * p.alt);
     ctx.rotate(p.ang);
-    ctx.globalAlpha = 0.28;
-    shape('#000', '#000');
+    drawPlaneShadow(ctx, kind, sc, p.bank, Math.min(0.3, 6 / p.alt));
     ctx.restore();
+    // exhaust trail
+    if (dt > 0) {
+      const due = (this.puffAt.get(rc.id) ?? 0) - dt;
+      if (due <= 0) {
+        const d = PLANES[kind];
+        b.fx.smoke(p.x - Math.cos(p.ang) * (d.length * 0.25), p.y - Math.sin(p.ang) * (d.length * 0.25), false, 0.55);
+        this.puffAt.set(rc.id, 0.12);
+      } else this.puffAt.set(rc.id, due);
+    }
+    // aircraft: a touch larger the higher it is (closer to the camera)
     ctx.save();
     ctx.translate(p.x, p.y);
     ctx.rotate(p.ang);
-    ctx.scale(1.15, 1.15);
-    shape('#6f7458', '#8a8f6e');
-    // roundels in the team colour
-    ctx.fillStyle = team === this.b.playerTeam ? TEAM_COL.friend : TEAM_COL.enemy;
-    for (const y of [-5.2, 5.2]) {
-      ctx.beginPath();
-      ctx.arc(0.1, y, 0.6, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    // spinning propeller
-    ctx.strokeStyle = 'rgba(30,30,30,0.5)';
-    ctx.lineWidth = 0.25;
-    ctx.beginPath();
-    ctx.ellipse(4.9, 0, 0.15, 1.3, 0, 0, Math.PI * 2);
-    ctx.stroke();
+    const k = 1 + p.alt * 0.006;
+    ctx.scale(k, k);
+    drawPlaneAt(ctx, kind, sc, p.bank, b.time * 57 + rc.id * 1.7);
     ctx.restore();
   }
 
@@ -655,6 +655,68 @@ export class BattleRenderer {
         ctx.textAlign = 'center';
         ctx.fillStyle = friend ? 'rgba(190,215,255,0.9)' : 'rgba(255,190,180,0.85)';
         ctx.fillText(label, t.pos.x, y - 1.3 * mk);
+      }
+    }
+
+    // recon: the camera's scan wave, brackets on everything it shows us, a marker on each plane
+    for (const rc of b.recons) {
+      const friend = rc.team === b.playerTeam;
+      const rt = reconRevealT(rc);
+      if (rt >= 0 && rt < 1.9) {
+        const c0 = reconPos({ ...rc, t: rc.t - rt });
+        const R = rt * RECON_WAVE;
+        const a = 1 - rt / 1.9;
+        ctx.strokeStyle = friend ? `rgba(150,210,255,${0.14 * a})` : `rgba(255,120,100,${0.12 * a})`;
+        ctx.lineWidth = 3.2 * mk;
+        ctx.beginPath();
+        ctx.arc(c0.x, c0.y, R, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.strokeStyle = friend ? `rgba(190,230,255,${0.75 * a})` : `rgba(255,140,120,${0.7 * a})`;
+        ctx.lineWidth = 0.5 * mk;
+        ctx.stroke();
+      }
+      const pp = reconPos(rc);
+      const y = pp.y - 7.5 - mk;
+      ctx.fillStyle = friend ? TEAM_COL.friend : TEAM_COL.enemy;
+      ctx.beginPath();
+      ctx.moveTo(pp.x - 0.9 * mk, y - 0.8 * mk);
+      ctx.lineTo(pp.x + 0.9 * mk, y - 0.8 * mk);
+      ctx.lineTo(pp.x, y + 0.4 * mk);
+      ctx.closePath();
+      ctx.fill();
+      ctx.font = `700 ${1.6 * mk}px "Barlow Condensed", sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.fillStyle = friend ? 'rgba(190,215,255,0.95)' : 'rgba(255,190,180,0.95)';
+      ctx.fillText('RECON', pp.x, y - 1.3 * mk);
+    }
+    const ours = b.recons.find((rc) => rc.team === b.playerTeam && reconRevealing(rc));
+    if (ours) {
+      const rt = reconRevealT(ours);
+      const c0 = reconPos({ ...ours, t: ours.t - rt });
+      const wave = rt * RECON_WAVE;
+      for (const e of b.tanks) {
+        if (!e.alive || e.team === b.playerTeam) continue;
+        const d0 = dist(e.pos, c0);
+        if (d0 > wave) continue; // the scan hasn't reached it yet
+        const flash = Math.max(0, 1 - (wave - d0) / 40);
+        const s2 = e.bp.radius + 1.1;
+        const L = s2 * 0.5;
+        ctx.strokeStyle = flash > 0 ? `rgba(255,255,255,${0.45 + 0.55 * flash})` : `rgba(255,96,80,${0.6 + 0.25 * Math.sin(b.time * 6 + e.id)})`;
+        ctx.lineWidth = (0.28 + flash * 0.35) * mk;
+        ctx.beginPath();
+        for (const [sx, sy] of [
+          [-1, -1],
+          [1, -1],
+          [1, 1],
+          [-1, 1],
+        ]) {
+          const cx = e.pos.x + sx * s2;
+          const cy = e.pos.y + sy * s2;
+          ctx.moveTo(cx - sx * L, cy);
+          ctx.lineTo(cx, cy);
+          ctx.lineTo(cx, cy - sy * L);
+        }
+        ctx.stroke();
       }
     }
 

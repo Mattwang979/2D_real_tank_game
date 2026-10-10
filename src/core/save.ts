@@ -2,6 +2,7 @@
 
 import { VEHICLES, getVehicle } from '../data/vehicles';
 import type { Lang } from '../ui/i18n';
+import { type AILevel, isAILevel } from '../game/difficulty';
 
 export interface Settings {
   lang: Lang;
@@ -15,6 +16,10 @@ export interface Settings {
   haptics: boolean;
   /** replay of how you were knocked out */
   killcam: boolean;
+  /** AI difficulty (single player, and the default for rooms you host) */
+  aiLevel: AILevel;
+  /** rooms you host fill empty places with AI tanks */
+  mpFillAI: boolean;
 }
 
 export interface SaveData {
@@ -47,7 +52,7 @@ function fresh(): SaveData {
     lineup: ['m4a2', 'pz4h', 't34_41'],
     researching: null,
     selected: 'm4a2',
-    settings: { lang: navigator.language?.toLowerCase().startsWith('zh') ? 'zh' : 'en', quality: 'high', volume: 0.8, map: 'random', weather: 'random', voice: true, haptics: true, killcam: true },
+    settings: { lang: navigator.language?.toLowerCase().startsWith('zh') ? 'zh' : 'en', quality: 'high', volume: 0.8, map: 'random', weather: 'random', voice: true, haptics: true, killcam: true, aiLevel: 'normal', mpFillAI: true },
     stats: { battles: 0, wins: 0, kills: 0 },
   };
 }
@@ -60,7 +65,9 @@ function load(): SaveData {
     if (raw) {
       const d = JSON.parse(raw) as SaveData;
       const f = fresh();
-      return { ...f, ...d, settings: { ...f.settings, ...d.settings }, stats: { ...f.stats, ...d.stats } };
+      const settings = { ...f.settings, ...d.settings };
+      if (!isAILevel(settings.aiLevel)) settings.aiLevel = 'normal';
+      return { ...f, ...d, settings, stats: { ...f.stats, ...d.stats } };
     }
   } catch {
     /* storage unavailable */

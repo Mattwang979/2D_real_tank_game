@@ -45,16 +45,36 @@ check('recon button shown', !!rb);
 await page.screenshot({ path: `${out}/sp_buttons.png` });
 await touch('touchStart', [[rb.x, rb.y, 3]]);
 await touch('touchEnd', []);
-await page.waitForTimeout(500);
+await page.waitForTimeout(300);
+st = await ev(() => {
+  const b = window.__pen.battle;
+  const r = b.recons[0];
+  return r && { kind: r.kind, tin: r.tin, t: r.t, revealing: r.t >= r.tin - 1.4 };
+});
+check('recon plane on its way in (not revealing yet)', !!st && !st.revealing && st.tin > 1.5 && st.tin < 6, JSON.stringify(st));
+check('plane type follows the nation (Pz IV → Storch)', st?.kind === 1);
+await page.waitForFunction(() => {
+  const r = window.__pen.battle.recons[0];
+  return r && r.t >= r.tin - 1.4 + 0.5;
+}, null, { timeout: 8000 });
 st = await ev(() => {
   const b = window.__pen.battle;
   const p = b.player;
   const alive = b.tanks.filter((t) => t.alive && t.team !== p.team);
-  return { recons: b.recons.length, spotted: alive.filter((t) => b.isSpotted(p.team, t)).length, alive: alive.length };
+  return { recons: b.recons.length, spotted: alive.filter((t) => b.isSpotted(p.team, t)).length, alive: alive.length, pill: true };
 });
-check('recon reveals every enemy', st.recons === 1 && st.spotted === st.alive, JSON.stringify(st));
-await page.waitForTimeout(2500);
+check('recon reveals every enemy once the camera is on', st.recons === 1 && st.spotted === st.alive, JSON.stringify(st));
 await page.screenshot({ path: `${out}/sp_recon.png` });
+// the plane stays for the reveal and then leaves
+const left = await ev(async () => {
+  const b = window.__pen.battle;
+  const r = b.recons[0];
+  const { reconTotal } = await import('/src/game/support.ts');
+  return reconTotal(r) - r.t;
+});
+await page.waitForTimeout(left * 1000 + 700);
+st = await ev(() => ({ recons: window.__pen.battle.recons.length }));
+check('plane gone after its flight', st.recons === 0, JSON.stringify({ ...st, waited: left.toFixed(1) }));
 // third kill → artillery
 st = await ev(() => {
   const b = window.__pen.battle;
@@ -64,7 +84,7 @@ st = await ev(() => {
   return { arty: b.supportOf(p).arty, streak: p.streak };
 });
 check('three kills give artillery', st.arty === 1 && st.streak === 3, JSON.stringify(st));
-// park two enemies together in view, call artillery on them by tapping the battlefield
+// park two enemies together, call artillery on them from the big map
 const target = await ev(() => {
   const b = window.__pen.battle;
   const p = b.player;
@@ -78,42 +98,64 @@ const target = await ev(() => {
     e.throttle = 0;
   });
   window.__artyTargets = es.map((e) => e.id);
-  const r = window.__pen.renderer;
-  r.cam = { x: (p.pos.x + tp.x) / 2, y: (p.pos.y + tp.y) / 2 };
-  return { world: tp, screen: r.toScreen(tp) };
+  return { world: tp };
 });
 await page.waitForTimeout(300);
 const ab = await ev(() => window.__pen.hud.buttons.find((b) => b.id === 'arty'));
 await touch('touchStart', [[ab.x, ab.y, 4]]);
 await touch('touchEnd', []);
-await page.waitForTimeout(200);
-check('arty button enters targeting', await ev(() => window.__pen.hud.targeting));
-const sp = await ev((w) => window.__pen.renderer.toScreen(w), target.world);
-const driveSide = await ev((x) => x < window.__pen.renderer.W * 0.45, sp.x);
-await touch('touchStart', [[sp.x, sp.y, 5]]);
-if (driveSide) {
-  // on the drive-stick side only a quick tap picks the target (a hold is driving)
-  await page.waitForTimeout(60);
-} else {
-  await page.waitForTimeout(150);
-  await page.screenshot({ path: `${out}/sp_target.png` });
+await page.waitForTimeout(250);
+check('arty button opens the target map', await ev(() => window.__pen.hud.targeting && !!window.__pen.hud.artyMap.g));
+const g = await ev(() => window.__pen.hud.artyMap.g);
+// FIRE does nothing before a target is placed
+await touch('touchStart', [[g.fire.x + g.fire.w / 2, g.fire.y + g.fire.h / 2, 5]]);
+await touch('touchEnd', []);
+await page.waitForTimeout(150);
+check('no strike without a target', await ev(() => window.__pen.battle.artys.length === 0 && window.__pen.hud.targeting));
+// tap a few metres off, then fine-tune with the magnifier onto the pair
+const off = { x: target.world.x - 12, y: target.world.y + 8 };
+await touch('touchStart', [[g.mx + off.x * g.k, g.my + off.y * g.k, 6]]);
+await touch('touchEnd', []);
+await page.waitForTimeout(150);
+let tg = await ev(() => ({ ...window.__pen.hud.artyMap.target }));
+check('tap on the map places the target', Math.hypot(tg.x - off.x, tg.y - off.y) < 2, JSON.stringify(tg));
+const dx = (tg.x - (target.world.x + 3)) * g.lz;
+const dy = (tg.y - (target.world.y + 2)) * g.lz;
+await touch('touchStart', [[g.lx, g.ly, 7]]);
+for (let i = 1; i <= 10; i++) {
+  await touch('touchMove', [[g.lx + (dx * i) / 10, g.ly + (dy * i) / 10, 7]]);
+  await page.waitForTimeout(16);
 }
 await touch('touchEnd', []);
-await page.waitForTimeout(400);
-st = await ev(() => ({ artys: window.__pen.battle.artys.length, targeting: window.__pen.hud.targeting }));
-check('artillery called', st.artys === 1 && !st.targeting, JSON.stringify(st));
+await page.waitForTimeout(200);
+tg = await ev(() => ({ ...window.__pen.hud.artyMap.target }));
+check('magnifier drag fine-tunes the target', Math.hypot(tg.x - (target.world.x + 3), tg.y - (target.world.y + 2)) < 1.5, JSON.stringify(tg));
+const zone = await ev(() => window.__pen.hud.artyMap.zone());
+check('map counts the enemies in the zone', zone && zone.enemies >= 2 && !zone.me, JSON.stringify(zone));
+await page.screenshot({ path: `${out}/sp_target.png` });
+const health = () =>
+  ev(() => {
+    const b = window.__pen.battle;
+    return window.__artyTargets.map((id) => {
+      const t = b.tanks.find((x) => x.id === id);
+      return { alive: t.alive, crew: t.mods.filter((m) => m.def.kind === 'crew' && m.hp > 0).length, hp: Math.round(t.mods.reduce((a, m) => a + m.hp, 0)) };
+    });
+  });
+const before = await health();
+await touch('touchStart', [[g.fire.x + g.fire.w / 2, g.fire.y + g.fire.h / 2, 8]]);
+await touch('touchEnd', []);
+await page.waitForTimeout(300);
+st = await ev(() => ({ artys: window.__pen.battle.artys.map((a) => [a.x, a.y]), targeting: window.__pen.hud.targeting, stock: window.__pen.battle.supportOf(window.__pen.battle.player).arty }));
+check('artillery called on the chosen spot', st.artys.length === 1 && !st.targeting && st.stock === 0 && Math.hypot(st.artys[0][0] - tg.x, st.artys[0][1] - tg.y) < 0.5, JSON.stringify(st));
 await page.waitForTimeout(1600);
 await page.screenshot({ path: `${out}/sp_warning.png` });
 await page.waitForTimeout(3200);
 await page.screenshot({ path: `${out}/sp_impacts.png` });
 await page.waitForTimeout(1500);
-st = await ev(() => {
-  const b = window.__pen.battle;
-  const p = b.player;
-  const ts = window.__artyTargets.map((id) => b.tanks.find((t) => t.id === id));
-  return { streak: p.streak, targets: ts.map((t) => ({ alive: t.alive, crew: t.mods.filter((m) => m.def.kind === 'crew' && m.hp > 0).length, track: t.moduleOk('track') })), craters: true };
-});
-check('artillery hurt the targets', st.targets.some((t) => !t.alive || t.crew < 4 || !t.track), JSON.stringify(st));
+const after = await health();
+st = await ev(() => ({ streak: window.__pen.battle.player.streak }));
+// 8 shells scatter over the zone, so a tank can come through untouched now and then — but rarely both
+check('artillery hurt the targets', after.some((t, i) => !t.alive || t.crew < before[i].crew || t.hp < before[i].hp), JSON.stringify({ before, after }));
 check('artillery kills do not feed the streak', st.streak === 3, `streak ${st.streak}`);
 check('no page errors', errors.length === 0, errors.join(' | '));
 console.log(ok ? 'ALL PASS' : 'SOME FAILED');

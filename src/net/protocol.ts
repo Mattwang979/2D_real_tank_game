@@ -67,7 +67,7 @@ export interface Snapshot {
   cv: CarrierState[];
   /** carriers spotted by each team */
   csp: [number[], number[]];
-  /** recon flights: [id, team, x0, y0, x1, y1, t, T] */
+  /** recon flights: [id, team, kind, ex, ey, cx, cy, r, a0, dir, tin, t] */
   rc: number[][];
   /** artillery strikes: [id, team, x, y, t, ...impact times] */
   ar: number[][];
@@ -88,8 +88,9 @@ export type NetEvent =
 export type HostMsg =
   | { t: 'welcome'; key: string }
   | { t: 'reject'; reason: 'full' | 'started' | 'version' }
-  | { t: 'lobby'; players: LobbyPlayer[]; mapId: string; code: string; weather?: string }
-  | { t: 'start'; mapId: string; seed: number; weather?: string; slots: Array<{ key: string; name: string; lineup: string[]; team: 0 | 1 }> }
+  /** ai: empty places get AI tanks (1) or not (0); lvl: AI difficulty */
+  | { t: 'lobby'; players: LobbyPlayer[]; mapId: string; code: string; weather?: string; ai?: number; lvl?: string }
+  | { t: 'start'; mapId: string; seed: number; weather?: string; ai?: number; lvl?: string; slots: Array<{ key: string; name: string; lineup: string[]; team: 0 | 1 }> }
   | { t: 'u'; n?: TankInfo[]; s?: Snapshot; fx?: NetFx[]; ev?: NetEvent[] }
   | { t: 'end'; winner: 0 | 1 }
   | { t: 'pong'; c: number }

@@ -12,7 +12,7 @@ import { haptics } from '../core/haptics';
 import type { Battle, BattleEvent } from '../game/battle';
 import { BATTLE_TIME, TICKETS } from '../game/battle';
 import { CARRIER } from '../game/carrier';
-import { ARTY } from '../game/support';
+import { ARTY, RECON_TIME, reconPos, reconRevealT, reconRevealing } from '../game/support';
 import { FLARE, flareLight } from '../game/weather';
 import { PING_LIFE, RADIO, radioIndex } from '../game/radio';
 import { voice } from '../core/voice';
@@ -24,6 +24,7 @@ import { drawXray, drawTankSprite, makeCanvas } from '../render/tankRender';
 import { t as tr } from './i18n';
 import { drawHitCam, hitTitle, roundRect, type HitCamEntry } from './hitcam';
 import type { KillCam } from '../render/killcam';
+import { ArtyMap } from './artyMap';
 
 type Ctx = CanvasRenderingContext2D;
 
@@ -182,11 +183,12 @@ export class Hud {
   private prevRecoil = 0;
   /** our tank is hull-down against the nearest enemy */
   hullDown = false;
-  /** choosing an artillery target */
-  targeting = false;
-  private aimPt: { id: number; pos: V2 } | null = null;
-  /** targeting: a quick tap on the drive side also picks the target */
-  private tapCand: { id: number; pos: V2; t: number } | null = null;
+  /** the big map for choosing an artillery target */
+  artyMap: ArtyMap;
+  /** choosing an artillery target (the map is open) */
+  get targeting(): boolean {
+    return this.artyMap.open;
+  }
   private hullDownT = 0;
   /** radio menu open */
   radioOpen = false;
@@ -202,6 +204,7 @@ export class Hud {
     this.r = r;
     this.canvas = canvas;
     this.controls = controls ?? localControls(b);
+    this.artyMap = new ArtyMap(this);
     canvas.addEventListener('pointerdown', this.onDown);
     canvas.addEventListener('pointermove', this.onMove);
     canvas.addEventListener('pointerup', this.onUp);
@@ -254,6 +257,11 @@ export class Hud {
         { id: 'skip', x: W - s.r - 118, y: H - s.b - 38, w: 104, h: 30 },
         { id: 'pause', x: W - s.r - 30, y: s.t + 26, r: 18 },
       ];
+      return;
+    }
+    if (this.artyMap.open) {
+      // the artillery map handles its own touches; only the menu button stays
+      this.buttons = [{ id: 'pause', x: W - s.r - 30, y: s.t + 26, r: 18 }];
       return;
     }
     const fr = clamp(H * 0.13, 40, 54);
@@ -372,6 +380,20 @@ export class Hud {
     if (this.sight?.id === e.pointerId) this.endSight();
     const p = this.pt(e);
     this.layout();
+    if (this.artyMap.open) {
+      const pb = this.hitButton(p.x, p.y);
+      if (pb) {
+        this.press(pb.id);
+        return;
+      }
+      const hit = this.artyMap.down(e.pointerId, p);
+      if (hit === 'fire') this.fireArty();
+      else if (hit === 'cancel') {
+        audio.click();
+        this.artyMap.close();
+      } else this.capture(e);
+      return;
+    }
     const btn = this.hitButton(p.x, p.y);
     if (btn) {
       if ((btn.id === 'smoke' || btn.id === 'flare') && this.playing()) {
@@ -388,19 +410,6 @@ export class Hud {
     }
     if (!this.playing()) return;
     const W = this.r.W;
-    if (this.targeting) {
-      const mm = this.minimapRect();
-      if (p.x >= mm.x && p.x <= mm.x + mm.size && p.y >= mm.y && p.y <= mm.y + mm.size) {
-        const S = this.b.map.size;
-        this.callArty({ x: ((p.x - mm.x) / mm.size) * S, y: ((p.y - mm.y) / mm.size) * S });
-        return;
-      }
-      if (p.x >= W * 0.45 && Math.hypot(p.x - this.fireC.x, p.y - this.fireC.y) > this.fireC.r + 10) {
-        this.aimPt = { id: e.pointerId, pos: p };
-        this.capture(e);
-        return;
-      }
-    }
     {
       // tap on the minimap: ping that spot for the team
       const mm = this.minimapRect();
@@ -419,7 +428,6 @@ export class Hud {
       return;
     }
     if (p.x < W * 0.45 && !this.move) {
-      if (this.targeting) this.tapCand = { id: e.pointerId, pos: p, t: performance.now() };
       const R = this.stickR();
       const base = { x: clamp(p.x, R + 8 + this.safe.l, W * 0.45), y: clamp(p.y, R + 60, this.r.H - R - 8) };
       this.move = this.newStick(e, base, p);
@@ -467,10 +475,7 @@ export class Hud {
 
   private onMove = (e: PointerEvent) => {
     const p = this.pt(e);
-    if (this.aimPt && e.pointerId === this.aimPt.id) {
-      this.aimPt.pos = p;
-      return;
-    }
+    if (this.artyMap.move(e.pointerId, p)) return;
     if (this.move && e.pointerId === this.move.id) {
       this.move.pos = p;
       if (dist(p, this.move.base) > 6) this.move.moved = true;
@@ -493,12 +498,7 @@ export class Hud {
   };
 
   private onUp = (e: PointerEvent) => {
-    if (this.aimPt && e.pointerId === this.aimPt.id) {
-      const w = this.r.toWorldPt(this.aimPt.pos);
-      this.aimPt = null;
-      this.callArty(w);
-      return;
-    }
+    if (this.artyMap.up(e.pointerId)) return;
     const id = this.pressed.get(e.pointerId);
     if (id !== undefined) {
       this.pressed.delete(e.pointerId);
@@ -507,9 +507,6 @@ export class Hud {
     }
     if (this.move && e.pointerId === this.move.id) {
       this.move = null;
-      const tc = this.tapCand;
-      this.tapCand = null;
-      if (tc && tc.id === e.pointerId && this.targeting && performance.now() - tc.t < 300 && dist(this.pt(e), tc.pos) < 14) this.callArty(this.r.toWorldPt(tc.pos));
     } else if (this.fireStick && e.pointerId === this.fireStick.id) {
       const st = this.fireStick;
       this.fireStick = null;
@@ -607,13 +604,19 @@ export class Hud {
     this.controls.radio(cmd, pos?.x, pos?.y);
   }
 
-  private callArty(w: V2) {
-    this.targeting = false;
-    this.aimPt = null;
-    const p = this.b.player;
-    if (!p || !p.alive || this.b.supportOf(p).arty <= 0) return;
-    this.controls.arty(w.x, w.y);
+  /** FIRE on the artillery map: call the strike on its target. */
+  fireArty() {
+    const tg = this.artyMap.target;
+    if (!tg) {
+      audio.click();
+      return;
+    }
+    this.artyMap.close();
+    if (!this.artyMap.available()) return;
+    this.controls.arty(tg.x, tg.y);
+    this.artyMap.target = null;
     audio.click();
+    haptics.tick();
   }
 
   private note(text: string, color = '#ffd27a') {
@@ -668,9 +671,8 @@ export class Hud {
     } else if (id === 'recon' && p) {
       this.controls.recon();
     } else if (id === 'arty' && p) {
-      this.targeting = !this.targeting;
-      this.aimPt = null;
-      if (this.targeting) this.note(tr('Tap the battlefield or the minimap to call artillery'), '#ffd27a');
+      if (this.artyMap.open) this.artyMap.close();
+      else this.artyMap.show();
     } else if (id === 'zin') this.r.zoomStep(1);
     else if (id === 'zout') {
       this.r.zoomStep(-1);
@@ -722,8 +724,7 @@ export class Hud {
       this.fireStick = null;
       this.throwStick = null;
       this.brakeHeld = false;
-      this.targeting = false;
-      this.aimPt = null;
+      this.artyMap.close();
       this.radioOpen = false;
       if (this.sight) this.endSight();
       if (p) p.handbrake = false;
@@ -754,6 +755,25 @@ export class Hud {
       haptics.fire(p.spec.gun.caliber);
     }
     this.prevRecoil = p.recoil;
+
+    // on the artillery map the tank holds still
+    if (this.artyMap.open) {
+      if (!this.artyMap.available()) this.artyMap.close();
+      else {
+        this.move = null;
+        this.fireStick = null;
+        this.throwStick = null;
+        this.brakeHeld = false;
+        if (this.sight) this.endSight();
+        if (this.autoInput) this.autoInput(p);
+        else {
+          p.throttle = 0;
+          p.steer = 0;
+          p.handbrake = false;
+        }
+        return;
+      }
+    }
 
     // movement
     if (this.autoInput) {
@@ -938,8 +958,16 @@ export class Hud {
       ctx.restore();
       return;
     }
+    if (this.artyMap.open) {
+      this.artyMap.draw(ctx, W, H, s);
+      for (const bt of this.buttons) this.drawTopBtn(ctx, bt);
+      this.drawNetInfo(ctx, W, H, s, true);
+      ctx.restore();
+      return;
+    }
 
     this.drawScore(ctx, W, s);
+    this.drawReconPill(ctx, W, s);
     this.drawMinimap(ctx, s);
     const p = b.player;
     const live = !!p && p.alive && b.state === 'playing';
@@ -965,7 +993,6 @@ export class Hud {
       this.drawButtons(ctx, p);
       this.drawFireStick(ctx, p);
       if (this.sight) this.drawSightTouch(ctx);
-      if (this.targeting) this.drawTargeting(ctx, W);
       if (this.radioOpen) this.drawRadioMenu(ctx);
     } else {
       for (const bt of this.buttons) this.drawTopBtn(ctx, bt);
@@ -1047,10 +1074,10 @@ export class Hud {
     ctx.font = '600 11px "Barlow Condensed", sans-serif';
     ctx.textAlign = 'right';
     ctx.fillStyle = 'rgba(160,200,255,0.95)';
-    ctx.fillText(`${aliveOwn} ▮  +${b.reinforcements[pt]}`, cx - 36, y + 18);
+    ctx.fillText(b.fillAI ? `${aliveOwn} ▮  +${b.reinforcements[pt]}` : `${aliveOwn} ▮`, cx - 36, y + 18);
     ctx.textAlign = 'left';
     ctx.fillStyle = 'rgba(255,170,160,0.95)';
-    ctx.fillText(`+${b.reinforcements[et]}  ▮ ${aliveEn}`, cx + 36, y + 18);
+    ctx.fillText(b.fillAI ? `+${b.reinforcements[et]}  ▮ ${aliveEn}` : `▮ ${aliveEn}`, cx + 36, y + 18);
     // timer
     const left = Math.max(0, BATTLE_TIME - b.time);
     const mm = Math.floor(left / 60);
@@ -1210,6 +1237,29 @@ export class Hud {
       ctx.fillStyle = friend ? '#bfe0ff' : '#ffb0a6';
       ctx.fillRect(x + c.pos.x * sc - 2, y + c.pos.y * sc - 2, 4, 4);
     }
+    // recon planes, and the enemies our plane is showing
+    for (const rc of b.recons) {
+      const pp = reconPos(rc);
+      ctx.save();
+      ctx.translate(x + pp.x * sc, y + pp.y * sc);
+      ctx.rotate(pp.ang);
+      ctx.fillStyle = rc.team === b.playerTeam ? '#cfe6ff' : '#ffc2b8';
+      ctx.fillRect(-3.5, -0.9, 7, 1.8);
+      ctx.fillRect(-0.4, -5, 2, 10);
+      ctx.fillRect(-3.6, -2.2, 1.2, 4.4);
+      ctx.restore();
+    }
+    if (b.recons.some((rc) => rc.team === b.playerTeam && reconRevealing(rc))) {
+      const k = (b.time * 1.5) % 1;
+      ctx.strokeStyle = `rgba(255,120,100,${0.9 - k * 0.8})`;
+      ctx.lineWidth = 1.2;
+      for (const t of b.tanks) {
+        if (!t.alive || t.team === b.playerTeam) continue;
+        ctx.beginPath();
+        ctx.arc(x + t.pos.x * sc, y + t.pos.y * sc, 3 + k * 5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
     // player vision cone
     const p = b.player;
     if (p && p.alive) {
@@ -1223,6 +1273,36 @@ export class Hud {
       ctx.fill();
     }
     ctx.restore();
+  }
+
+  /** Recon status under the score: ours on the way / showing the enemy, or the enemy's watching us. */
+  private drawReconPill(ctx: Ctx, W: number, s: typeof this.safe) {
+    const b = this.b;
+    let y = s.t + 62;
+    for (const rc of b.recons) {
+      const rt = reconRevealT(rc);
+      if (rt >= RECON_TIME) continue;
+      const friend = rc.team === b.playerTeam;
+      if (!friend && rt < 0) continue;
+      const left = Math.max(0, RECON_TIME - Math.max(0, rt));
+      const txt = friend ? (rt < 0 ? `✈ ${tr('RECON INBOUND')}` : `✈ ${tr('RECON')} ${Math.ceil(left)}s`) : `⚠ ${tr('ENEMY RECON')} ${Math.ceil(left)}s`;
+      ctx.save();
+      ctx.font = '700 12px "Barlow Condensed", sans-serif';
+      ctx.textAlign = 'center';
+      const w = ctx.measureText(txt).width + 22;
+      ctx.fillStyle = friend ? 'rgba(25,55,95,0.82)' : 'rgba(100,28,22,0.82)';
+      roundRect(ctx, W / 2 - w / 2, y - 9, w, 18, 9);
+      ctx.fill();
+      if (rt >= 0) {
+        // time left
+        ctx.fillStyle = friend ? 'rgba(150,210,255,0.9)' : 'rgba(255,140,120,0.9)';
+        ctx.fillRect(W / 2 - w / 2 + 9, y + 6, (w - 18) * (left / RECON_TIME), 1.6);
+      }
+      ctx.fillStyle = friend ? '#d8ecff' : '#ffd0c8';
+      ctx.fillText(txt, W / 2, y + 0.5);
+      ctx.restore();
+      y += 21;
+    }
   }
 
   private drawDamage(ctx: Ctx, p: Tank, s: typeof this.safe) {
@@ -1421,44 +1501,6 @@ export class Hud {
       ctx.beginPath();
       ctx.arc(sp.x, sp.y, 8 * z, 0, Math.PI * 2);
       ctx.fill();
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
-
-  private drawTargeting(ctx: Ctx, W: number) {
-    ctx.save();
-    // banner
-    ctx.font = '700 13px "Barlow Condensed", sans-serif';
-    ctx.textAlign = 'center';
-    const msg = tr('ARTILLERY: tap the battlefield or the minimap · ARTY again to cancel');
-    const tw = ctx.measureText(msg).width;
-    ctx.fillStyle = 'rgba(60,30,10,0.75)';
-    roundRect(ctx, W / 2 - tw / 2 - 12, this.safe.t + 48, tw + 24, 22, 5);
-    ctx.fill();
-    ctx.fillStyle = '#ffd27a';
-    ctx.fillText(msg, W / 2, this.safe.t + 59);
-    // minimap frame highlight
-    const mm = this.minimapRect();
-    ctx.strokeStyle = 'rgba(255,200,110,0.9)';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(mm.x - 2, mm.y - 2, mm.size + 4, mm.size + 4);
-    if (this.aimPt) {
-      const R = ARTY.SPREAD * this.r.zoom;
-      const c = this.aimPt.pos;
-      ctx.setLineDash([6, 5]);
-      ctx.strokeStyle = 'rgba(255,120,80,0.95)';
-      ctx.fillStyle = 'rgba(255,90,60,0.12)';
-      ctx.beginPath();
-      ctx.arc(c.x, c.y, R, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.beginPath();
-      ctx.moveTo(c.x - 10, c.y);
-      ctx.lineTo(c.x + 10, c.y);
-      ctx.moveTo(c.x, c.y - 10);
-      ctx.lineTo(c.x, c.y + 10);
       ctx.stroke();
     }
     ctx.restore();

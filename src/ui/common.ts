@@ -7,6 +7,7 @@ import { get, reset, save } from '../core/save';
 import { VEHICLES, type VehicleSpec, penAt } from '../data/vehicles';
 import { getLang, setLang, t } from './i18n';
 import { isWeatherId, WEATHER_IDS, WEATHERS } from '../game/weather';
+import { AI_LEVEL_IDS, AI_LEVELS, type AILevel, isAILevel } from '../game/difficulty';
 
 type Attrs = Record<string, string | number | boolean | ((e: Event) => void) | undefined>;
 
@@ -73,6 +74,35 @@ export function weatherPicker(cur: string, onPick: (id: string) => void) {
     {},
     h('h2', {}, t('Weather')),
     h('div', { class: 'wx-pick' }, opt('random', weatherLabel('random'), t('Clear, rain, fog or night')), ...WEATHER_IDS.map((id) => opt(id, weatherLabel(id), t(WEATHERS[id].info)))),
+    h('div', { class: 'row' }, h('button', { class: 'btn', onclick: () => close() }, t('Close'))),
+  );
+  close = modal(c);
+}
+
+/** Label of an AI difficulty. */
+export function aiLabel(id: string): string {
+  const lv = isAILevel(id) ? id : 'normal';
+  return `🤖 ${t(AI_LEVELS[lv].name)}`;
+}
+
+/** AI difficulty chip; tapping it opens the picker (read-only when `onPick` is null). */
+export function aiChip(cur: string, onPick: ((id: AILevel) => void) | null): HTMLElement {
+  if (!onPick) return h('span', { class: 'wx-chip ro' }, aiLabel(cur));
+  return h('button', { class: 'wx-chip', onclick: () => aiPicker(cur, onPick) }, `${aiLabel(cur)} ▾`);
+}
+
+export function aiPicker(cur: string, onPick: (id: AILevel) => void) {
+  let close = () => {};
+  const c = h(
+    'div',
+    {},
+    h('h2', {}, t('AI difficulty')),
+    h(
+      'div',
+      { class: 'wx-pick' },
+      ...AI_LEVEL_IDS.map((id) => h('button', { class: id === cur ? 'on' : '', onclick: () => (close(), onPick(id)) }, h('b', {}, aiLabel(id)), h('i', {}, t(AI_LEVELS[id].info)))),
+    ),
+    h('div', { style: 'margin-top:8px;font-size:12px;color:var(--dim)' }, t('Applies to every AI tank in the battle, on both teams.')),
     h('div', { class: 'row' }, h('button', { class: 'btn', onclick: () => close() }, t('Close'))),
   );
   close = modal(c);

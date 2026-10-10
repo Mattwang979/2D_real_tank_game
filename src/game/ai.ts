@@ -9,6 +9,7 @@ import type { Carrier } from './carrier';
 import type { Tank } from './tank';
 import { FLARE, flareLight } from './weather';
 import type { RadioOrder } from './radio';
+import { AI_LEVELS, type AILevelDef } from './difficulty';
 
 type Role = 'capper' | 'support' | 'flank';
 
@@ -32,6 +33,10 @@ export class AIController {
   lastPos: V2;
   /** time when the AI may fire at its current target (reaction delay) */
   fireAfter = 0;
+  /** difficulty settings */
+  L: AILevelDef;
+  /** per-shot aim error that doesn't settle away (rad), redrawn after every shot */
+  aimBias = 0;
   private repairAt = -1;
   private smokeHandledHit = -1;
   /** next time to think about firing a flare (night) */
@@ -46,7 +51,8 @@ export class AIController {
     this.tank = tank;
     this.b = b;
     this.role = role;
-    this.skill = rand.range(0.35, 0.8);
+    this.L = AI_LEVELS[b.aiLevel];
+    this.skill = rand.range(this.L.skill[0], this.L.skill[1]);
     this.lastPos = { ...tank.pos };
     this.repath = rand.range(0, 1);
   }
@@ -170,18 +176,25 @@ export class AIController {
       const d = dist(t.pos, e.pos);
       if (d > 420) continue;
       const los = !losBlocked(b.map, t.turretPos(), e.pos);
-      const score = d * (los ? 1 : 2.5) * (e === this.target ? 0.7 : 1) * (e.slot ? 0.9 : 1);
+      const score = d * (los ? 1 : 2.5) * (e === this.target ? 0.7 : 1) * (e.slot ? this.L.humanBias : 1);
       if (score < bestScore) {
         bestScore = score;
         best = e;
       }
     }
     if (best !== this.target) {
+      const L = this.L;
       this.target = best;
-      this.aimErr = rand.gauss() * (1.4 - this.skill) * 2.2 * DEG;
-      this.fireAfter = now + rand.range(0.7, 1.6) * (1.3 - this.skill);
+      this.aimErr = rand.gauss() * (1.4 - this.skill) * L.aimErr * DEG;
+      this.newBias();
+      this.fireAfter = now + rand.range(L.react[0], L.react[1]) * (1.3 - this.skill);
       if (best) this.chooseAimPoint(best);
     }
+  }
+
+  /** A fresh shot-to-shot error (easier crews never get every shot dead on). */
+  private newBias() {
+    this.aimBias = rand.gauss() * this.L.floor * (1.2 - this.skill) * DEG;
   }
 
   /** Pick the weakest-looking spot on the target using the penetration predictor. */
@@ -197,7 +210,7 @@ export class AIController {
       { x: -lk.L * 0.2, y: -lk.W * 0.4 },
       { x: -lk.L * 0.4, y: 0 },
     ];
-    if (this.skill < 0.55) {
+    if (this.skill < 0.55 || !rand.chance(this.L.weakSpot)) {
       this.aimLocal = cands[0];
       return;
     }
@@ -242,7 +255,7 @@ export class AIController {
 
     // fires
     if (t.burning > 0 && t.extinguishCd <= 0) {
-      if (this.extinguishAt < 0) this.extinguishAt = now + rand.range(1.5, 4);
+      if (this.extinguishAt < 0) this.extinguishAt = now + rand.range(1.5, 4) * this.L.slow;
       if (now >= this.extinguishAt) {
         b.extinguish(t);
         this.extinguishAt = -1;
@@ -251,7 +264,7 @@ export class AIController {
 
     // repairs
     if (t.canRepair()) {
-      if (this.repairAt < 0) this.repairAt = now + rand.range(1, 2.5);
+      if (this.repairAt < 0) this.repairAt = now + rand.range(1, 2.5) * this.L.slow;
       if (now >= this.repairAt) {
         t.startRepair();
         this.repairAt = -1;
@@ -259,8 +272,8 @@ export class AIController {
     } else this.repairAt = -1;
     // killstreak support
     const sup = b.supportOf(t);
-    if (sup.recon > 0 && !this.target && rand.chance(dt * 0.25)) b.useRecon(t);
-    if (sup.arty > 0 && rand.chance(dt * 0.5)) {
+    if (sup.recon > 0 && !this.target && rand.chance(dt * 0.25 * this.L.support)) b.useRecon(t);
+    if (sup.arty > 0 && rand.chance(dt * 0.5 * this.L.support)) {
       const aim = this.artyAim();
       if (aim) b.useArty(t, aim.x, aim.y);
     }
@@ -275,7 +288,7 @@ export class AIController {
     if (t.canSmoke() && wall - t.lastHitTime < 0.6 && this.smokeHandledHit !== t.lastHitTime) {
       this.smokeHandledHit = t.lastHitTime;
       const crippled = !t.canMove() || t.crewAlive().length < t.spec.crew.length || t.burning > 0;
-      if (crippled && rand.chance(0.55)) {
+      if (crippled && rand.chance(this.L.smoke)) {
         const src = t.lastHitBy?.pos ?? this.target?.pos;
         if (src) t.wantSmoke = Math.atan2(src.y - t.pos.y, src.x - t.pos.x) + rand.range(-0.15, 0.15);
       }
@@ -312,19 +325,21 @@ export class AIController {
       const shell = t.spec.gun.shells[t.shellIdx];
       const v = shell.velocity * b.shellSpeedScale;
       const tof = eDist / v;
-      const lead = this.skill * 0.9 + 0.1;
+      const lead = (this.skill * 0.9 + 0.1) * this.L.lead;
       const px = aimW.x + Math.cos(e.ang) * e.speed * tof * lead;
       const py = aimW.y + Math.sin(e.ang) * e.speed * tof * lead;
       // aim error settles over time
-      this.aimErr *= Math.exp(-dt * (0.6 + this.skill));
-      t.aimAngle = Math.atan2(py - tp.y, px - tp.x) + this.aimErr;
+      this.aimErr *= Math.exp(-dt * (0.6 + this.skill) * this.L.settle);
+      t.aimAngle = Math.atan2(py - tp.y, px - tp.x) + this.aimErr + this.aimBias;
       if (hasLos && eDist < 420) {
         engaging = true;
         const err = t.aimError();
         const ready = t.isReloaded() && t.canFire();
         if (ready && now >= this.fireAfter && err < Math.max(0.5 * DEG, t.dispersion() * 1.4) && !this.friendlyInLine(e)) {
           t.wantFire = true;
-          this.aimErr = rand.gauss() * (1.3 - this.skill) * 1.6 * DEG;
+          this.aimErr = rand.gauss() * (1.3 - this.skill) * 1.6 * (this.L.aimErr / 2.2) * DEG;
+          this.newBias();
+          this.fireAfter = now + t.reloadTime() + rand.range(this.L.pause[0], this.L.pause[1]);
         }
       }
     } else {
@@ -338,7 +353,7 @@ export class AIController {
         t.aimAngle = Math.atan2(py - tp.y, px - tp.x) + this.aimErr * 0.5;
         if (t.isReloaded() && t.canFire() && now >= this.fireAfter && t.aimError() < Math.max(0.6 * DEG, t.dispersion() * 1.4)) {
           t.wantFire = true;
-          this.fireAfter = now + rand.range(0.3, 1.0);
+          this.fireAfter = now + rand.range(0.3, 1.0) + rand.range(this.L.pause[0], this.L.pause[1]);
         }
       } else {
         // look along movement direction / toward capture
@@ -376,7 +391,7 @@ export class AIController {
       const bearing = Math.atan2(e.pos.y - t.pos.y, e.pos.x - t.pos.x);
       let desired = bearing;
       if (t.bp.casemate) desired = bearing;
-      else if (t.spec.armor.ufp.s < 45 && t.spec.cls !== 'light') desired = bearing + (angDiff(bearing, t.ang) > 0 ? 1 : -1) * 28 * DEG;
+      else if (this.L.angling && t.spec.armor.ufp.s < 45 && t.spec.cls !== 'light') desired = bearing + (angDiff(bearing, t.ang) > 0 ? 1 : -1) * 28 * DEG;
       else desired = bearing;
       const diff = angDiff(t.ang, desired);
       t.throttle = 0;
@@ -484,7 +499,7 @@ export class AIController {
       if (b.tanks.some((o) => o.alive && o.team === t.team && dist(o.pos, e.pos) < 22)) continue;
       if (score > bestScore) {
         bestScore = score;
-        best = { x: e.pos.x + rand.range(-4, 4), y: e.pos.y + rand.range(-4, 4) };
+        best = { x: e.pos.x + rand.range(-this.L.artyErr, this.L.artyErr), y: e.pos.y + rand.range(-this.L.artyErr, this.L.artyErr) };
       }
     }
     return bestScore >= 2 ? best : null;

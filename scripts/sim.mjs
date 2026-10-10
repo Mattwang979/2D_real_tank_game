@@ -1,4 +1,5 @@
 // Fast headless battle simulation (no rendering) to validate AI + rules.
+// Usage: [AI=easy|normal|hard] [W=weather] [LINEUP=a,b,c] node scripts/sim.mjs [map] [seconds]
 import { chromium } from '/opt/npm-tools/node_modules/playwright/index.mjs';
 const [map = 'valley', seconds = '400'] = process.argv.slice(2);
 const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' });
@@ -6,7 +7,7 @@ const page = await browser.newPage({ viewport: { width: 844, height: 390 } });
 page.on('pageerror', (e) => console.log('[pageerror]', e.message, e.stack?.split('\n').slice(0, 5).join(' | ')));
 await page.goto('http://localhost:5173/');
 await page.waitForTimeout(800);
-await page.evaluate(([m, lu, w]) => { const s = window.__pen.save(); s.settings.map = m; s.settings.weather = w; if (lu) s.lineup = lu.split(','); }, [map, process.env.LINEUP || '', process.env.W || 'clear']);
+await page.evaluate(([m, lu, w, ai]) => { const s = window.__pen.save(); s.settings.map = m; s.settings.weather = w; s.settings.aiLevel = ai; if (lu) s.lineup = lu.split(','); }, [map, process.env.LINEUP || '', process.env.W || 'clear', process.env.AI || 'normal']);
 await page.evaluate(() => window.__pen.startBattle());
 await page.waitForTimeout(1500);
 const res = await page.evaluate(async (secs) => {
