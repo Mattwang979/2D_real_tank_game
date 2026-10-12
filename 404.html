@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>PENETRATION — 已搬家 / moved</title>
+<link rel="canonical" href="https://mw-dormlab.github.io/2D_real_tank_game/">
+<style>
+  html, body { margin: 0; height: 100%; background: #14160e; color: #e6dfc2; font: 16px/1.5 system-ui, -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; }
+  main { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 10px; padding: 0 20px; text-align: center; }
+  b { letter-spacing: 0.2em; font-size: 22px; }
+  a { color: #e6cf8a; }
+</style>
+<script>
+  // PENETRATION moved to mw-dormlab.github.io. Browser storage belongs to one address, so a guest's
+  // progress here is sent along in the new address's #fragment (which no server ever sees); the
+  // game takes it if nothing has been played there yet. Invite links (?room=CODE) and email sign-in
+  // links (#access_token=…) keep working.
+  (function () {
+    var to = 'https://mw-dormlab.github.io/2D_real_tank_game/';
+    var parts = [];
+    var hash = location.hash.replace(/^#/, '');
+    if (hash) parts.push(hash);
+    try {
+      var raw = localStorage.getItem('penetration.save.v1');
+      var d = raw && JSON.parse(raw);
+      // only a guest's progress: an account's is in the cloud already
+      if (d && typeof d === 'object' && !d.cloudUser) {
+        delete d.cloudUser;
+        var bytes = new TextEncoder().encode(JSON.stringify(d));
+        var bin = '';
+        for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        parts.push('carry=' + btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''));
+      }
+    } catch (e) {
+      /* storage unavailable: just go */
+    }
+    location.replace(to + location.search + (parts.length ? '#' + parts.join('&') : ''));
+  })();
+</script>
+</head>
+<body>
+<main>
+  <b>PENETRATION</b>
+  <div>遊戲搬家了，正在前往新網址…<br>The game has moved — taking you there…</div>
+  <a href="https://mw-dormlab.github.io/2D_real_tank_game/">https://mw-dormlab.github.io/2D_real_tank_game/</a>
+</main>
+</body>
+</html>
